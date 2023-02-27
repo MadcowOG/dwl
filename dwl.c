@@ -1375,6 +1375,7 @@ dwl_output_printstatus_to(Monitor* monitor, DwlOutput *output)
 {
 	Client *c, *focused;
 	int tagmask, state, numclients, focused_client, tag;
+    const char *title, *appid;
 	focused = focustop(monitor);
 	zdwl_output_v1_send_active(output->resource, monitor == selmon);
 
@@ -1398,9 +1399,13 @@ dwl_output_printstatus_to(Monitor* monitor, DwlOutput *output)
 		}
 		zdwl_output_v1_send_tag(output->resource, tag, state, numclients, focused_client);
 	}
-	zdwl_output_v1_send_layout(output->resource, monitor->lt[monitor->sellt] - layouts);
-	zdwl_output_v1_send_title(output->resource, focused ? client_get_title(focused) : "");
-	zdwl_output_v1_send_frame(output->resource);
+    title = focused ? client_get_title(focused) : "";
+    appid = focused ? client_get_appid(focused) : "";
+
+    zdwl_output_v1_send_layout(output->resource, monitor->lt[monitor->sellt] - layouts);
+    zdwl_output_v1_send_title(output->resource, title ? title : broken);
+    zdwl_output_v1_send_appid(output->resource, appid ? appid : broken);
+    zdwl_output_v1_send_frame(output->resource);
 }
 
 void
