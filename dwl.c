@@ -1400,11 +1400,13 @@ dwl_output_printstatus_to(Monitor* monitor, DwlOutput *output)
 		zdwl_output_v1_send_tag(output->resource, tag, state, numclients, focused_client);
 	}
     title = focused ? client_get_title(focused) : "";
-    appid = focused ? client_get_appid(focused) : "";
 
     zdwl_output_v1_send_layout(output->resource, monitor->lt[monitor->sellt] - layouts);
     zdwl_output_v1_send_title(output->resource, title ? title : broken);
-    zdwl_output_v1_send_appid(output->resource, appid ? appid : broken);
+    if (wl_resource_get_version(output->resource) >= ZDWL_OUTPUT_V1_APPID) { /* Don't break clients using version 1 */
+        appid = focused ? client_get_appid(focused) : "";
+        zdwl_output_v1_send_appid(output->resource, appid ? appid : broken);
+    }
     zdwl_output_v1_send_frame(output->resource);
 }
 
