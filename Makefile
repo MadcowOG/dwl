@@ -40,7 +40,7 @@ clean:
 dist: clean
 	mkdir -p dwl-$(VERSION)
 	cp -R LICENSE* Makefile README.md client.h config.def.h\
-		config.mk protocols dwl.1 dwl.c util.c util.h\
+		config.mk protocols dwl.1 dwl.c util.c util.h dwl-clipboard-watcher\
 		dwl-$(VERSION)
 	tar -caf dwl-$(VERSION).tar.gz dwl-$(VERSION)
 	rm -rf dwl-$(VERSION)
@@ -49,11 +49,13 @@ install: dwl
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
 	cp -f dwl $(DESTDIR)$(PREFIX)/bin
 	chmod 755 $(DESTDIR)$(PREFIX)/bin/dwl
+	cp -f dwl-clipboard-watcher $(DESTDIR)$(PREFIX)/bin/dwl-clipboard-watcher
+	chmod 755 $(DESTDIR)$(PREFIX)/bin/dwl-clipboard-watcher
 	mkdir -p $(DESTDIR)$(MANDIR)/man1
 	cp -f dwl.1 $(DESTDIR)$(MANDIR)/man1
 	chmod 644 $(DESTDIR)$(MANDIR)/man1/dwl.1
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/dwl $(DESTDIR)$(MANDIR)/man1/dwl.1
+	rm -f $(DESTDIR)$(PREFIX)/bin/dwl $(DESTDIR)$(MANDIR)/man1/dwl.1 $(DESTDIR)$(PREFIX)/bin/dwl-clipboard-watcher
 
 .SUFFIXES: .c .o
 .c.o:
