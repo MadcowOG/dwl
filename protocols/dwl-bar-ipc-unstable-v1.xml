@@ -13,7 +13,7 @@ I would probably just submit raphi's patchset but I don't think that would be po
       version bump.
       Backward incompatible changes are done by bumping the version
       number in the protocol and interface names and resetting the
-      interface version. Once the protocol is to be declared stable, 
+      interface version. Once the protocol is to be declared stable,
       the 'z' prefix and the version number in the protocol and
       interface names are removed and the interface version number is
       reset.
