@@ -1411,6 +1411,8 @@ dwl_output_printstatus_to(Monitor* monitor, DwlOutput *output)
         appid = focused ? client_get_appid(focused) : "";
         zdwl_output_v1_send_appid(output->resource, appid ? appid : broken);
     }
+    if (wl_resource_get_version(output->resource) >= ZDWL_OUTPUT_V1_LAYOUT_SYMBOL_SINCE_VERSION) /* Don't break clients using version 2 or below */
+        zdwl_output_v1_send_layout_symbol(output->resource, monitor->ltsymbol);
     zdwl_output_v1_send_frame(output->resource);
 }
 
@@ -2518,7 +2520,7 @@ setup(void)
 	wl_signal_add(&output_mgr->events.test, &output_mgr_test);
 
 	wlr_scene_set_presentation(scene, wlr_presentation_create(dpy, backend));
-	wl_global_create(dpy, &zdwl_manager_v1_interface, 2, NULL, dwl_manager_bind);
+	wl_global_create(dpy, &zdwl_manager_v1_interface, 3, NULL, dwl_manager_bind);
 
 #ifdef XWAYLAND
 	/*
