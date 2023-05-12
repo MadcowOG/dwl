@@ -27,7 +27,6 @@ static const char *const autostart[] = {
         "dunst", NULL,
         "gsettings", "set ", "org.gnome.desktop.interface", "icon-theme", "'ePapirus'", NULL,
         "gsettings", "set ", "org.gnome.desktop.interface", "gtk-theme", "'Adwaita-dark'", NULL,
-        "swayidle", NULL
         NULL /* terminate */
 };
 

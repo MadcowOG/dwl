@@ -1,0 +1,18 @@
+--- dwl.c
++++ dwl.c
+@@ -246,6 +247,7 @@ static void createlocksurface(struct wl_listener *listener, void *data);
+ static void createmon(struct wl_listener *listener, void *data);
+ static void createnotify(struct wl_listener *listener, void *data);
+ static void createpointer(struct wlr_pointer *pointer);
++static void createshortcutsinhibitor(struct wl_listener *listener, void *data);
+ static void cursorframe(struct wl_listener *listener, void *data);
+ static void destroydragicon(struct wl_listener *listener, void *data);
+ static void destroyidleinhibitor(struct wl_listener *listener, void *data);
+@@ -255,6 +257,7 @@ static void destroylocksurface(struct wl_listener *listener, void *data);
+ static void destroynotify(struct wl_listener *listener, void *data);
+ static void destroysessionlock(struct wl_listener *listener, void *data);
+ static void destroysessionmgr(struct wl_listener *listener, void *data);
++static void destroyshortcutsinhibitmgr(struct wl_listener *listener, void *data);
+ static Monitor *dirtomon(enum wlr_direction dir);
+ static void focusclient(Client *c, int lift);
+ static void focusmon(const Arg *arg);

@@ -1,5 +1,4 @@
 /* appearance */
-#include <xkbcommon/xkbcommon-keysyms.h>
 static const int sloppyfocus               = 1;  /* focus follows mouse */
 static const int bypass_surface_visibility = 0;  /* 1 means idle inhibitors will disable idle tracking even if it's surface isn't visible  */
 static const int smartgaps                 = 0;  /* 1 means no outer gap when there is only one window */
@@ -19,15 +18,12 @@ static const int allow_constrain      = 1;
 
 /* Autostart */
 static const char *const autostart[] = {
-        "wl-paste", "-t", "text", "-w", "dwl-clipboard-watcher", NULL,
+        "wl-paste", "-t", "text", "-w", "dwl-cliboard-watcher", NULL,
         "someblocks", "-s", "/run/user/1000/dwl-bar-0", NULL,
         "lxsession", NULL,
         "pasystray", NULL,
         "nm-applet", NULL,
         "dunst", NULL,
-        "gsettings", "set ", "org.gnome.desktop.interface", "icon-theme", "'ePapirus'", NULL,
-        "gsettings", "set ", "org.gnome.desktop.interface", "gtk-theme", "'Adwaita-dark'", NULL,
-        "swayidle", NULL
         NULL /* terminate */
 };
 
@@ -71,10 +67,6 @@ static const struct xkb_rule_names xkb_rules = {
 	*/
 	.options = NULL,
 };
-
-/* numlock and capslock */
-static const int numlock = 1;
-static const int capslock = 0;
 
 static const int repeat_rate = 25;
 static const int repeat_delay = 600;
@@ -194,10 +186,8 @@ static const Key keys[] = {
 	TAGKEYS(          XKB_KEY_8, XKB_KEY_asterisk,                   7),
 	TAGKEYS(          XKB_KEY_9, XKB_KEY_parenleft,                  8),
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_Q,          quit,           {0} },
-    { MODKEY,                    XKB_KEY_grave,      spawn,          SHCMD("/usr/bin/pactl set-source-mute alsa_input.usb-PreSonus_AudioBox_USB_96_000000000000-00.analog-stereo toggle") },
-    { MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_L,          spawn,          SHCMD("/usr/bin/swaylock -e -l -c '<eeeeee>'") },
-    { MODKEY,                    XKB_KEY_Sys_Req,    spawn,          SHCMD("/usr/bin/grim -o \"$(dwl-state -a)\" ~/Pictures/Screenshots/\"$(date '+%Y%m%d-%H%M%S').png\"") },
-    { 0,                         XKB_KEY_Print,      spawn,          SHCMD("/usr/bin/grim -g \"$(slurp)\" ~/Pictures/Screenshots/\"$(date '+%Y%m%d-%H%M%S').png\"") },
+    { MODKEY,                    XKB_KEY_grave,      spawn,          SHCMD("/usr/bin/pactl set-source-mute alsa_input.usb-PreSonus_AudioBox_USB_96_000000000000-00.analog-stereo toggle")},
+    { MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_L,          spawn,          SHCMD("/usr/bin/swaylock -e -l -c '<eeeeee>'")},
 
 	/* Ctrl-Alt-Backspace and Ctrl-Alt-Fx used to be handled by X server */
 	{ WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT,XKB_KEY_Terminate_Server, quit, {0} },
