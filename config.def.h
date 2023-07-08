@@ -22,11 +22,11 @@ static const char *const autostart[] = {
         "wl-paste", "-t", "text", "-w", "dwl-clipboard-watcher", NULL,
         "someblocks", "-s", "/run/user/1000/dwl-bar-0", NULL,
         "lxsession", NULL,
-        "pasystray", NULL,
+        //"pasystray", NULL,
         "nm-applet", NULL,
         "dunst", NULL,
-        "gsettings", "set ", "org.gnome.desktop.interface", "icon-theme", "'ePapirus'", NULL,
-        "gsettings", "set ", "org.gnome.desktop.interface", "gtk-theme", "'Adwaita-dark'", NULL,
+        //"gsettings", "set ", "org.gnome.desktop.interface", "icon-theme", "'ePapirus'", NULL,
+        //"gsettings", "set ", "org.gnome.desktop.interface", "gtk-theme", "'Adwaita-dark'", NULL,
         "swayidle", NULL,
         NULL /* terminate */
 };
@@ -39,7 +39,7 @@ static const Rule rules[] = {
 	/* examples:
 	{ "Gimp",     NULL,       0,            1,          0,      1,         -1 },
 	*/
-	{ "firefox",  NULL,       1 << 8,       0,          0,      1,         -1 },
+	//{ "firefox",  NULL,       1 << 8,       0,          0,      1,         -1 },
     { "Alacritty", NULL,      0,            0,          1,      0,         -1 },
 };
 

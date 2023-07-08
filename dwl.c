@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
+#include <wayland-util.h>
 #include <wlr/backend.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/interfaces/wlr_keyboard.h>
@@ -366,6 +367,7 @@ static void togglefullscreen(const Arg *arg);
 static void togglegaps(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
+static void toggle_visibility(const Arg *arg);
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
 static void unmapnotify(struct wl_listener *listener, void *data);
@@ -981,8 +983,10 @@ createlayersurface(struct wl_listener *listener, void *data)
 	if (!wlr_layer_surface->output)
 		wlr_layer_surface->output = selmon ? selmon->wlr_output : NULL;
 
-	if (!wlr_layer_surface->output)
-		wlr_layer_surface_v1_destroy(wlr_layer_surface);
+	if (!wlr_layer_surface->output) {
+        wlr_layer_surface_v1_destroy(wlr_layer_surface);
+        return;
+    }
 
 	layersurface = ecalloc(1, sizeof(LayerSurface));
 	layersurface->type = LayerShell;
@@ -1492,6 +1496,12 @@ void dwl_ipc_output_printstatus_to(DwlIpcOutput *ipc_output) {
     zdwl_ipc_output_v2_send_title(ipc_output->resource, title ? title : broken);
     zdwl_ipc_output_v2_send_appid(ipc_output->resource, appid ? appid : broken);
     zdwl_ipc_output_v2_send_layout_symbol(ipc_output->resource, monitor->ltsymbol);
+    if (wl_resource_get_version(ipc_output->resource) >= ZDWL_IPC_OUTPUT_V2_FULLSCREEN_SINCE_VERSION) {
+        zdwl_ipc_output_v2_send_fullscreen(ipc_output->resource, focused ? focused->isfullscreen : 0);
+    }
+    if (wl_resource_get_version(ipc_output->resource) >= ZDWL_IPC_OUTPUT_V2_FLOATING_SINCE_VERSION) {
+        zdwl_ipc_output_v2_send_floating(ipc_output->resource, focused ? focused->isfloating : 0);
+    }
     zdwl_ipc_output_v2_send_frame(ipc_output->resource);
 }
 
@@ -2839,7 +2849,7 @@ setup(void)
 	wl_signal_add(&output_mgr->events.test, &output_mgr_test);
 
 	wlr_scene_set_presentation(scene, wlr_presentation_create(dpy, backend));
-    wl_global_create(dpy, &zdwl_ipc_manager_v2_interface, 1, NULL, dwl_ipc_manager_bind);
+    wl_global_create(dpy, &zdwl_ipc_manager_v2_interface, 2, NULL, dwl_ipc_manager_bind);
 
 #ifdef XWAYLAND
 	/*
@@ -3032,6 +3042,12 @@ toggleview(const Arg *arg)
 	printstatus();
 }
 
+void toggle_visibility(const Arg *arg) {
+    DwlIpcOutput *ipc_output;
+    wl_list_for_each(ipc_output, &selmon->dwl_ipc_outputs, link)
+        zdwl_ipc_output_v2_send_toggle_visibility(ipc_output->resource);
+}
+
 void
 unlocksession(struct wl_listener *listener, void *data)
 {
@@ -3172,9 +3188,12 @@ updatemons(struct wl_listener *listener, void *data)
 		wl_list_for_each(c, &clients, link)
 			if (!c->mon && client_is_mapped(c))
 				setmon(c, selmon, c->tags);
-		if (selmon->lock_surface)
-			client_notify_enter(selmon->lock_surface->surface,
-					wlr_seat_get_keyboard(seat));
+        focusclient(focustop(selmon), 1);
+		if (selmon->lock_surface) {
+            client_notify_enter(selmon->lock_surface->surface,
+                    wlr_seat_get_keyboard(seat));
+            client_activate_surface(selmon->lock_surface->surface, 1);
+        }
 	}
 
 	wlr_output_manager_v1_set_configuration(output_mgr, config);

@@ -4,3 +4,7 @@ dwl
 *-protocol.h
 .ccls-cache
 config.h
+src/*
+pkg/*
+*.tar.zst
+*.tar.gz
