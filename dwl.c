@@ -3102,7 +3102,7 @@ main(int argc, char *argv[])
 	char *startup_cmd = NULL;
 	int c;
 
-	while ((c = getopt(argc, argv, "s:hv")) != -1) {
+	while ((c = getopt(argc, argv, "s:hvn")) != -1) {
 		if (c == 's')
 			startup_cmd = optarg;
 		else if (c == 'v')
