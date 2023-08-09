@@ -5,13 +5,17 @@
 #include <libinput.h>
 #include <limits.h>
 #include <linux/input-event-codes.h>
+#include <libdrm/drm_fourcc.h>
 #include <signal.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
+#include <wayland-util.h>
 #include <wlr/backend.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/render/allocator.h>
@@ -50,8 +54,12 @@
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/interfaces/wlr_buffer.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
+#include <fcft/fcft.h>
+#include <pixman-1/pixman.h>
 #ifdef XWAYLAND
 #include <wlr/xwayland.h>
 #include <X11/Xlib.h>
@@ -67,14 +75,21 @@
 #define VISIBLEON(C, M)         ((M) && (C)->mon == (M) && ((C)->tags & (M)->tagset[(M)->seltags]))
 #define LENGTH(X)               (sizeof X / sizeof X[0])
 #define END(A)                  ((A) + LENGTH(A))
-#define TAGMASK                 ((1u << tagcount) - 1)
+#define TAGMASK                 ((1u << LENGTH(tags)) - 1)
 #define LISTEN(E, L, H)         wl_signal_add((E), ((L)->notify = (H), (L)))
 #define IDLE_NOTIFY_ACTIVITY    wlr_idle_notify_activity(idle, seat), wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
+#define TEXT_WIDTH(text, max)   (draw_text_fg_bg(NULL, NULL, NULL, NULL, FCFT_SUBPIXEL_NONE, text, 0, 0, max, 0, 0, 0, 0))
+#define VALUE_OR(data, default) (data ? data : default)
+#define STRINGIFY(str)          #str
+#define TITLE(title)            (VALUE_OR(title, ""))
+#define STATUS(status)          (VALUE_OR(status, ("dwl "STRINGIFY(VERSION))))
 
 /* enums */
 enum { CurNormal, CurPressed, CurMove, CurResize }; /* cursor */
 enum { XDGShell, LayerShell, X11Managed, X11Unmanaged }; /* client types */
 enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrFS, LyrTop, LyrOverlay, LyrBlock, NUM_LAYERS }; /* scene layers */
+enum color_scheme { inactive_scheme = 0, active_scheme = 1, urgent_scheme = 2, };
+
 #ifdef XWAYLAND
 enum { NetWMWindowTypeDialog, NetWMWindowTypeSplash, NetWMWindowTypeToolbar,
 	NetWMWindowTypeUtility, NetLast }; /* EWMH atoms */
@@ -191,6 +206,10 @@ struct Monitor {
 	double mfact;
 	int nmaster;
 	char ltsymbol[16];
+    char *status;
+
+    int32_t size, stride, height, width;
+    bool invalid;
 };
 
 typedef struct {
@@ -220,6 +239,17 @@ typedef struct {
 	struct wl_listener destroy;
 } SessionLock;
 
+struct shm_buffer {
+    struct wlr_buffer base;
+    size_t stride;
+    uint32_t data[];
+};
+
+struct internal_window {
+    struct wlr_scene_tree *scene_tree;
+    struct wl_listener tree_destroy;
+};
+
 /* function declarations */
 static void applybounds(Client *c, struct wlr_box *bbox);
 static void applyrules(Client *c);
@@ -228,6 +258,10 @@ static void arrangelayer(Monitor *m, struct wl_list *list,
 		struct wlr_box *usable_area, int exclusive);
 static void arrangelayers(Monitor *m);
 static void axisnotify(struct wl_listener *listener, void *data);
+static void bar_draw(struct Monitor *monitor);
+static void buffer_destroy(struct wlr_buffer *buffer);
+static bool buffer_begin_data_ptr_access(struct wlr_buffer *buffer, uint32_t flags, void **data, uint32_t *format, size_t *stride);
+static void buffer_end_data_ptr_access(struct wlr_buffer *buffer);
 static void buttonpress(struct wl_listener *listener, void *data);
 static void chvt(const Arg *arg);
 static void checkidleinhibitor(struct wlr_surface *exclude);
@@ -255,6 +289,7 @@ static void destroynotify(struct wl_listener *listener, void *data);
 static void destroysessionlock(struct wl_listener *listener, void *data);
 static void destroysessionmgr(struct wl_listener *listener, void *data);
 static Monitor *dirtomon(enum wlr_direction dir);
+static uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreground_color, pixman_image_t *background, const pixman_color_t *background_color, enum fcft_subpixel subpixel, const char *text, uint32_t left_padding, uint32_t bottom_padding, int32_t max_text_length, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 static void focusclient(Client *c, int lift);
 static void focusmon(const Arg *arg);
 static void focusstack(const Arg *arg);
@@ -263,6 +298,7 @@ static void fullscreennotify(struct wl_listener *listener, void *data);
 static void handlesig(int signo);
 static void incnmaster(const Arg *arg);
 static void inputdevice(struct wl_listener *listener, void *data);
+static void internal_window_tree_destory(struct wl_listener *listener, void *data);
 static int keybinding(uint32_t mods, xkb_keysym_t sym);
 static void keypress(struct wl_listener *listener, void *data);
 static void keypressmod(struct wl_listener *listener, void *data);
@@ -362,10 +398,13 @@ static unsigned int cursor_mode;
 static Client *grabc;
 static int grabcx, grabcy; /* client-relative */
 
+static struct fcft_font *font;
+
 static struct wlr_output_layout *output_layout;
 static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
+static bool no_bar = false;
 
 /* global event handlers */
 static struct wl_listener cursor_axis = {.notify = axisnotify};
@@ -393,6 +432,11 @@ static struct wl_listener request_start_drag = {.notify = requeststartdrag};
 static struct wl_listener start_drag = {.notify = startdrag};
 static struct wl_listener session_lock_create_lock = {.notify = locksession};
 static struct wl_listener session_lock_mgr_destroy = {.notify = destroysessionmgr};
+static const struct wlr_buffer_impl buffer_impl = {
+    .destroy = buffer_destroy,
+    .begin_data_ptr_access = buffer_begin_data_ptr_access,
+    .end_data_ptr_access = buffer_end_data_ptr_access
+};
 
 #ifdef XWAYLAND
 static void activatex11(struct wl_listener *listener, void *data);
@@ -568,6 +612,179 @@ axisnotify(struct wl_listener *listener, void *data)
 			event->delta_discrete, event->source);
 }
 
+void bar_draw(struct Monitor *monitor) {
+    struct shm_buffer *shm;
+    struct internal_window *window;
+    struct wlr_scene_buffer *scene_buffer;
+    pixman_image_t *main_image, *foreground, *background;
+    const pixman_color_t *foreground_color, *background_color;
+    enum color_scheme scheme;
+    uint32_t x, bottom_padding, tag, component_width, boxs, boxw,
+             urgent_tags, occupied_tags, client_tags;
+    const char *tag_name, *title, *status;
+    bool urgent, occupied, viewed, has_focused, floating, selected;
+    Client *client;
+
+    if (!monitor || no_bar) return;
+
+    shm = ecalloc(1, sizeof(*shm) + monitor->size);
+    shm->stride = monitor->stride;
+    wlr_buffer_init(&shm->base, &buffer_impl, monitor->width, monitor->height);
+
+    window = ecalloc(1, sizeof(*window));
+    window->scene_tree =  wlr_scene_tree_create(layers[LyrBottom]);
+    window->scene_tree->node.data = window;
+    window->tree_destroy.notify = internal_window_tree_destory;
+    wl_signal_add(&window->scene_tree->node.events.destroy, &window->tree_destroy);
+
+    main_image = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->width, monitor->height, shm->data, monitor->stride);
+    foreground = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->width, monitor->height, NULL, monitor->stride);
+    background = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->width, monitor->height, NULL, monitor->stride);
+    status = STATUS(monitor->status);
+    x = client_tags = urgent_tags = occupied_tags = 0;
+    bottom_padding = ((monitor->height + font->descent) / 2) + (monitor->height / 6);
+    boxs = font->height / 9;
+    boxw = font->height / 6 + 1;
+    floating = false;
+    selected = monitor == selmon;
+
+    wl_list_for_each(client, &clients, link) {
+        if (client->mon != monitor) continue;
+
+        occupied_tags |= client->tags;
+        if (client->isurgent) urgent_tags |= client->tags;
+    }
+
+    if ((client = focustop(monitor))) {
+        client_tags = client->tags;
+        floating = client->isfloating;
+    }
+
+    title = client ? client_get_title(client) : "";
+
+    /* draw tags */
+    for (int i = 0; i < LENGTH(tags); i++) {
+        tag_name = tags[i];
+        tag = 1 << i;
+        urgent = urgent_tags & tag;
+        occupied = occupied_tags & tag;
+        viewed = monitor->tagset[monitor->seltags] & tag;
+        has_focused = client_tags & tag;
+
+        scheme = inactive_scheme;
+        if (viewed) scheme = active_scheme;
+        if (urgent) scheme = urgent_scheme;
+
+        foreground_color = &schemes[scheme][0];
+        background_color = &schemes[scheme][1];
+
+        component_width = TEXT_WIDTH(tag_name, -1) + font->height;
+
+        if (occupied) {
+            pixman_image_fill_boxes(PIXMAN_OP_SRC, foreground, foreground_color, 1, &(pixman_box32_t){
+                    .x1 = x + boxs, .x2 = x + boxs + boxw,
+                    .y1 = boxs, .y2 = boxs + boxw,
+                    });
+
+            if (!has_focused) {
+                pixman_image_fill_boxes(PIXMAN_OP_CLEAR, foreground, foreground_color, 1, &(pixman_box32_t){
+                        .x1 = x + boxs + 1, .x2 = x + boxs + boxw - 1,
+                        .y1 = boxs + 1, .y2 = boxs + boxw - 1,
+                        });
+            }
+        }
+
+        draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, tag_name,
+                font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->height);
+
+        x += component_width;
+    }
+
+    /* draw layout */
+    foreground_color = &schemes[inactive_scheme][0];
+    background_color = &schemes[inactive_scheme][1];
+
+    component_width = TEXT_WIDTH(monitor->ltsymbol, -1) + font->height;
+    draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, monitor->ltsymbol,
+            font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->height);
+    x += component_width;
+
+    /* draw title */
+    scheme = selected ? active_scheme : inactive_scheme;
+    foreground_color = &schemes[scheme][0];
+    background_color = &schemes[scheme][1];
+
+    if (status_on_active && !selected) {
+        component_width = monitor->width - x;
+    }
+    else {
+        component_width = TEXT_WIDTH(title, -1) + font->height;
+        component_width = monitor->width - x - (TEXT_WIDTH(status, monitor->width - x - component_width - font->height) + font->height);
+    }
+
+    draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, title,
+            font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->height);
+
+    if (floating) {
+        pixman_image_fill_boxes(PIXMAN_OP_SRC, foreground, foreground_color, 1, &(pixman_box32_t){
+                .x1 = x + boxs, .x2 = x + boxs + boxw,
+                .y1 = boxs, .y2 = boxs + boxw,
+                });
+
+        pixman_image_fill_boxes(PIXMAN_OP_CLEAR, foreground, foreground_color, 1, &(pixman_box32_t){
+                .x1 = x + boxs + 1, .x2 = x + boxs + boxw - 1,
+                .y1 = boxs + 1, .y2 = boxs + boxw - 1,
+                });
+    }
+    x += component_width;
+
+    /* draw status */
+    if (status_on_active && selected) {
+        foreground_color = &schemes[inactive_scheme][0];
+        background_color = &schemes[inactive_scheme][1];
+
+        component_width = TEXT_WIDTH(status, monitor->width - x - font->height) + font->height;
+        draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, status,
+                font->height / 2, bottom_padding, monitor->width - x - font->height, x, 0, component_width, monitor->height);
+        x += component_width;
+    }
+
+    pixman_image_composite32(PIXMAN_OP_OVER, background, NULL, main_image, 0, 0, 0, 0, 0, 0, monitor->width, monitor->height);
+    pixman_image_composite32(PIXMAN_OP_OVER, foreground, NULL, main_image, 0, 0, 0, 0, 0, 0, monitor->width, monitor->height);
+
+    pixman_image_unref(foreground);
+    pixman_image_unref(background);
+    pixman_image_unref(main_image);
+
+    scene_buffer = wlr_scene_buffer_create(window->scene_tree, &shm->base);
+    wlr_buffer_drop(&shm->base);
+
+    wlr_scene_node_set_position(&scene_buffer->node, 0, bar_top ? 0 : monitor->wlr_output->height - monitor->height);
+}
+
+void buffer_destroy(struct wlr_buffer *wlr_buffer) {
+    struct shm_buffer *buffer;
+    buffer = wl_container_of(wlr_buffer, buffer, base);
+    free(buffer);
+}
+
+bool buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buffer, uint32_t flags, void **data, uint32_t *format, size_t *stride) {
+    struct shm_buffer *buffer;
+    buffer = wl_container_of(wlr_buffer, buffer, base);
+
+    if (flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE) return false;
+
+    *data   = buffer->data;
+    *format = DRM_FORMAT_ARGB8888;
+    *stride = buffer->stride;
+
+    return true;
+}
+
+void buffer_end_data_ptr_access(struct wlr_buffer *buffer) {
+    /* Nothing to destroy */
+}
+
 void
 buttonpress(struct wl_listener *listener, void *data)
 {
@@ -669,6 +886,8 @@ cleanup(void)
 	wlr_output_layout_destroy(output_layout);
 	wlr_seat_destroy(seat);
 	wl_display_destroy(dpy);
+    fcft_destroy(font);
+    fcft_fini();
 }
 
 void
@@ -974,6 +1193,16 @@ createmon(struct wl_listener *listener, void *data)
 	else
 		wlr_output_layout_add(output_layout, wlr_output, m->m.x, m->m.y);
 	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, LENGTH(m->ltsymbol));
+
+    // TODO: Creat bar stuff.
+    if (no_bar) return;
+
+    m->invalid = true;
+    m->width = m->wlr_output->width;
+    m->height = font->height + 2;
+    m->stride = 4 * m->width;
+    m->size = m->stride * m->height;
+    m->status = NULL;
 }
 
 void
@@ -1200,6 +1429,68 @@ dirtomon(enum wlr_direction dir)
 	return selmon;
 }
 
+uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreground_color, pixman_image_t *background, const pixman_color_t *background_color, enum fcft_subpixel subpixel, const char *text, uint32_t left_padding, uint32_t bottom_padding, int32_t max_text_length, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
+    uint32_t tx, ty, state, codepoint, prev_codepoint;
+    int64_t kern;
+    const struct fcft_glyph *glyph;
+    pixman_image_t *text_image;
+    bool draw_foreground, draw_background;
+
+    if (!text) return 0;
+
+    tx = x + left_padding;
+    ty = y + bottom_padding;
+    state = UTF8_ACCEPT;
+    prev_codepoint = 0;
+    text_image = foreground_color ? pixman_image_create_solid_fill(foreground_color) : NULL;
+    draw_foreground = foreground && foreground_color;
+    draw_background = background && background_color;
+
+
+    for (; *text; text++) {
+        if (utf8decode(&state, &codepoint, *text) == UTF8_REJECT) continue;
+
+
+        glyph = fcft_rasterize_char_utf32(font, codepoint, FCFT_SUBPIXEL_NONE);
+        if (!glyph) continue;
+
+        kern = 0;
+        if (prev_codepoint) fcft_kerning(font, prev_codepoint, codepoint, &kern, NULL);
+
+        if (max_text_length != -1 && tx + kern + glyph->advance.x >  x + left_padding + max_text_length) break;
+
+        if (draw_foreground) {
+            if (pixman_image_get_format(glyph->pix) == PIXMAN_a8r8g8b8) {
+                pixman_image_composite32(PIXMAN_OP_OVER, glyph->pix, text_image, foreground,
+                        0, 0, 0, 0,
+                        tx + glyph->x, ty - glyph->y,
+                        glyph->width, glyph->height);
+            }
+            else {
+                pixman_image_composite32(PIXMAN_OP_OVER, text_image, glyph->pix, foreground,
+                        0, 0, 0, 0,
+                        tx + glyph->x, ty - glyph->y,
+                        glyph->width, glyph->height);
+            }
+        }
+
+
+        tx += kern + glyph->advance.x;
+        prev_codepoint = codepoint;
+    }
+
+    if (draw_background) {
+        pixman_image_fill_boxes(PIXMAN_OP_SRC, background, background_color, 1, &(pixman_box32_t){
+                .x1 = x, .x2 = x + width,
+                .y1 = y, .y2 = y + height,
+                });
+    }
+
+    if (text_image) pixman_image_unref(text_image);
+
+    return tx;
+}
+
 void
 focusclient(Client *c, int lift)
 {
@@ -1392,6 +1683,12 @@ inputdevice(struct wl_listener *listener, void *data)
 	if (!wl_list_empty(&keyboards))
 		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
 	wlr_seat_set_capabilities(seat, caps);
+}
+
+void internal_window_tree_destory(struct wl_listener *listener, void *data) {
+    struct internal_window *window;
+    window = wl_container_of(listener, window, tree_destroy);
+    free(window);
 }
 
 int
@@ -1885,6 +2182,8 @@ printstatus(void)
 		printf("%s tags %u %u %u %u\n", m->wlr_output->name, occ, m->tagset[m->seltags],
 				sel, urg);
 		printf("%s layout %s\n", m->wlr_output->name, m->ltsymbol);
+
+        if (!no_bar) m->invalid = true;
 	}
 	fflush(stdout);
 }
@@ -1903,6 +2202,12 @@ rendermon(struct wl_listener *listener, void *data)
 	Monitor *m = wl_container_of(listener, m, frame);
 	Client *c;
 	struct timespec now;
+
+    // TODO: Render bar.
+    if (m->invalid) {
+        bar_draw(m);
+        m->invalid = false;
+    }
 
 	/* Render if no XDG clients have an outstanding resize and are visible on
 	 * this monitor. */
@@ -2314,6 +2619,11 @@ setup(void)
 		fprintf(stderr, "failed to setup XWayland X server, continuing without it\n");
 	}
 #endif
+
+    if (!fcft_init(FCFT_LOG_COLORIZE_AUTO, false, FCFT_LOG_CLASS_ERROR)) die("fcft_init");
+    if (!fcft_set_scaling_filter(FCFT_SCALING_FILTER_LANCZOS3)) die("fcft_set_scaling_filter");
+    font = fcft_from_name(LENGTH(fonts), fonts, NULL);
+    if (!font) die("fcft_from_name");
 }
 
 void
@@ -2801,6 +3111,8 @@ main(int argc, char *argv[])
 			startup_cmd = optarg;
 		else if (c == 'v')
 			die("dwl " VERSION);
+		else if (c == 'n')
+            no_bar = true;
 		else
 			goto usage;
 	}

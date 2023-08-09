@@ -1,14 +1,29 @@
 /* appearance */
 static const int sloppyfocus               = 1;  /* focus follows mouse */
 static const int bypass_surface_visibility = 0;  /* 1 means idle inhibitors will disable idle tracking even if it's surface isn't visible  */
+static const int bar_top                   = 1;
+static const int status_on_active          = 1;
 static const unsigned int borderpx         = 1;  /* border pixel of windows */
 static const float bordercolor[]           = {0.5, 0.5, 0.5, 1.0};
 static const float focuscolor[]            = {1.0, 0.0, 0.0, 1.0};
 /* To conform the xdg-protocol, set the alpha to zero to restore the old behavior */
 static const float fullscreen_bg[]         = {0.1, 0.1, 0.1, 1.0};
+static const char *fonts[] = {"monospace:size=13"};
 
 /* tagging - tagcount must be no greater than 31 */
-static const int tagcount = 9;
+static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
+
+static const pixman_color_t cyan  = { 0x0,    0x5555, 0x7777, 0xFFFF };
+static const pixman_color_t grey1 = { 0x2222, 0x2222, 0x2222, 0xFFFF };
+static const pixman_color_t grey2 = { 0xBBBB, 0xBBBB, 0xBBBB, 0xFFFF };
+static const pixman_color_t grey3 = { 0xEEEE, 0xEEEE, 0xEEEE, 0xFFFF };
+
+static const pixman_color_t schemes[3][2] = {
+    /* Scheme Type       fg,    bg */
+    [inactive_scheme] = {grey2, grey1},
+    [active_scheme]   = {grey3, cyan},
+    [urgent_scheme]   = {grey1, grey3},
+};
 
 static const Rule rules[] = {
 	/* app_id     title       tags mask     isfloating   monitor */
