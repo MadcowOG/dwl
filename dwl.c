@@ -208,8 +208,13 @@ struct Monitor {
 	char ltsymbol[16];
     char *status;
 
-    int32_t size, stride, height, width;
-    bool invalid;
+    /* Bar stuff */
+    struct {
+        struct wlr_scene_tree *scene_tree;
+        int32_t size, stride, height, width;
+        bool invalid, /* output and state does not match */
+             visible; /* The visibility of the bar */
+    } bar;
 };
 
 typedef struct {
@@ -243,11 +248,6 @@ struct shm_buffer {
     struct wlr_buffer base;
     size_t stride;
     uint32_t data[];
-};
-
-struct internal_window {
-    struct wlr_scene_tree *scene_tree;
-    struct wl_listener tree_destroy;
 };
 
 /* function declarations */
@@ -298,7 +298,6 @@ static void fullscreennotify(struct wl_listener *listener, void *data);
 static void handlesig(int signo);
 static void incnmaster(const Arg *arg);
 static void inputdevice(struct wl_listener *listener, void *data);
-static void internal_window_tree_destory(struct wl_listener *listener, void *data);
 static int keybinding(uint32_t mods, xkb_keysym_t sym);
 static void keypress(struct wl_listener *listener, void *data);
 static void keypressmod(struct wl_listener *listener, void *data);
@@ -398,12 +397,11 @@ static unsigned int cursor_mode;
 static Client *grabc;
 static int grabcx, grabcy; /* client-relative */
 
-static struct fcft_font *font;
-
 static struct wlr_output_layout *output_layout;
 static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
+static struct fcft_font *font;
 static bool no_bar = false;
 
 /* global event handlers */
@@ -565,8 +563,14 @@ arrangelayers(Monitor *m)
 		ZWLR_LAYER_SHELL_V1_LAYER_TOP,
 	};
 	LayerSurface *layersurface;
+
 	if (!m->wlr_output->enabled)
 		return;
+
+    if (!no_bar && m->bar.visible) {
+        usable_area.height -= m->bar.height;
+        if (bar_top) usable_area.y += m->bar.height;
+    }
 
 	/* Arrange exclusive surfaces from top->bottom */
 	for (i = 3; i >= 0; i--)
@@ -614,7 +618,6 @@ axisnotify(struct wl_listener *listener, void *data)
 
 void bar_draw(struct Monitor *monitor) {
     struct shm_buffer *shm;
-    struct internal_window *window;
     struct wlr_scene_buffer *scene_buffer;
     pixman_image_t *main_image, *foreground, *background;
     const pixman_color_t *foreground_color, *background_color;
@@ -627,22 +630,16 @@ void bar_draw(struct Monitor *monitor) {
 
     if (!monitor || no_bar) return;
 
-    shm = ecalloc(1, sizeof(*shm) + monitor->size);
-    shm->stride = monitor->stride;
-    wlr_buffer_init(&shm->base, &buffer_impl, monitor->width, monitor->height);
+    shm = ecalloc(1, sizeof(*shm) + monitor->bar.size);
+    shm->stride = monitor->bar.stride;
+    wlr_buffer_init(&shm->base, &buffer_impl, monitor->bar.width, monitor->bar.height);
 
-    window = ecalloc(1, sizeof(*window));
-    window->scene_tree =  wlr_scene_tree_create(layers[LyrBottom]);
-    window->scene_tree->node.data = window;
-    window->tree_destroy.notify = internal_window_tree_destory;
-    wl_signal_add(&window->scene_tree->node.events.destroy, &window->tree_destroy);
-
-    main_image = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->width, monitor->height, shm->data, monitor->stride);
-    foreground = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->width, monitor->height, NULL, monitor->stride);
-    background = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->width, monitor->height, NULL, monitor->stride);
+    main_image = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, shm->data, monitor->bar.stride);
+    foreground = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, NULL, monitor->bar.stride);
+    background = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, NULL, monitor->bar.stride);
     status = STATUS(monitor->status);
     x = client_tags = urgent_tags = occupied_tags = 0;
-    bottom_padding = ((monitor->height + font->descent) / 2) + (monitor->height / 6);
+    bottom_padding = ((monitor->bar.height + font->descent) / 2) + (monitor->bar.height / 6);
     boxs = font->height / 9;
     boxw = font->height / 6 + 1;
     floating = false;
@@ -695,7 +692,7 @@ void bar_draw(struct Monitor *monitor) {
         }
 
         draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, tag_name,
-                font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->height);
+                font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->bar.height);
 
         x += component_width;
     }
@@ -706,7 +703,7 @@ void bar_draw(struct Monitor *monitor) {
 
     component_width = TEXT_WIDTH(monitor->ltsymbol, -1) + font->height;
     draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, monitor->ltsymbol,
-            font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->height);
+            font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->bar.height);
     x += component_width;
 
     /* draw title */
@@ -715,15 +712,15 @@ void bar_draw(struct Monitor *monitor) {
     background_color = &schemes[scheme][1];
 
     if (status_on_active && !selected) {
-        component_width = monitor->width - x;
+        component_width = monitor->bar.width - x;
     }
     else {
         component_width = TEXT_WIDTH(title, -1) + font->height;
-        component_width = monitor->width - x - (TEXT_WIDTH(status, monitor->width - x - component_width - font->height) + font->height);
+        component_width = monitor->bar.width - x - (TEXT_WIDTH(status, monitor->bar.width - x - component_width - font->height) + font->height);
     }
 
     draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, title,
-            font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->height);
+            font->height / 2, bottom_padding, -1, x, 0, component_width, monitor->bar.height);
 
     if (floating) {
         pixman_image_fill_boxes(PIXMAN_OP_SRC, foreground, foreground_color, 1, &(pixman_box32_t){
@@ -743,23 +740,23 @@ void bar_draw(struct Monitor *monitor) {
         foreground_color = &schemes[inactive_scheme][0];
         background_color = &schemes[inactive_scheme][1];
 
-        component_width = TEXT_WIDTH(status, monitor->width - x - font->height) + font->height;
+        component_width = TEXT_WIDTH(status, monitor->bar.width - x - font->height) + font->height;
         draw_text_fg_bg(foreground, foreground_color, background, background_color, (enum fcft_subpixel)monitor->wlr_output->subpixel, status,
-                font->height / 2, bottom_padding, monitor->width - x - font->height, x, 0, component_width, monitor->height);
+                font->height / 2, bottom_padding, monitor->bar.width - x - font->height, x, 0, component_width, monitor->bar.height);
         x += component_width;
     }
 
-    pixman_image_composite32(PIXMAN_OP_OVER, background, NULL, main_image, 0, 0, 0, 0, 0, 0, monitor->width, monitor->height);
-    pixman_image_composite32(PIXMAN_OP_OVER, foreground, NULL, main_image, 0, 0, 0, 0, 0, 0, monitor->width, monitor->height);
+    pixman_image_composite32(PIXMAN_OP_OVER, background, NULL, main_image, 0, 0, 0, 0, 0, 0, monitor->bar.width, monitor->bar.height);
+    pixman_image_composite32(PIXMAN_OP_OVER, foreground, NULL, main_image, 0, 0, 0, 0, 0, 0, monitor->bar.width, monitor->bar.height);
 
     pixman_image_unref(foreground);
     pixman_image_unref(background);
     pixman_image_unref(main_image);
 
-    scene_buffer = wlr_scene_buffer_create(window->scene_tree, &shm->base);
+    scene_buffer = wlr_scene_buffer_create(monitor->bar.scene_tree, &shm->base);
     wlr_buffer_drop(&shm->base);
 
-    wlr_scene_node_set_position(&scene_buffer->node, 0, bar_top ? 0 : monitor->wlr_output->height - monitor->height);
+    wlr_scene_node_set_position(&scene_buffer->node, monitor->m.x, monitor->m.y + (bar_top ? 0 : monitor->wlr_output->height - monitor->bar.height));
 }
 
 void buffer_destroy(struct wlr_buffer *wlr_buffer) {
@@ -1194,15 +1191,16 @@ createmon(struct wl_listener *listener, void *data)
 		wlr_output_layout_add(output_layout, wlr_output, m->m.x, m->m.y);
 	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, LENGTH(m->ltsymbol));
 
-    // TODO: Creat bar stuff.
-    if (no_bar) return;
-
-    m->invalid = true;
-    m->width = m->wlr_output->width;
-    m->height = font->height + 2;
-    m->stride = 4 * m->width;
-    m->size = m->stride * m->height;
-    m->status = NULL;
+    if (!no_bar) {
+        m->bar.scene_tree = wlr_scene_tree_create(layers[LyrBottom]);
+        m->bar.invalid = true;
+        m->bar.visible = true;
+        m->bar.width = m->wlr_output->width;
+        m->bar.height = font->height + 2;
+        m->bar.stride = 4 * m->bar.width;
+        m->bar.size = m->bar.stride * m->bar.height;
+        m->status = NULL;
+    }
 }
 
 void
@@ -1683,12 +1681,6 @@ inputdevice(struct wl_listener *listener, void *data)
 	if (!wl_list_empty(&keyboards))
 		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
 	wlr_seat_set_capabilities(seat, caps);
-}
-
-void internal_window_tree_destory(struct wl_listener *listener, void *data) {
-    struct internal_window *window;
-    window = wl_container_of(listener, window, tree_destroy);
-    free(window);
 }
 
 int
@@ -2183,7 +2175,10 @@ printstatus(void)
 				sel, urg);
 		printf("%s layout %s\n", m->wlr_output->name, m->ltsymbol);
 
-        if (!no_bar) m->invalid = true;
+        if (!no_bar) {
+            m->bar.invalid = true;
+            wlr_output_commit(m->wlr_output);
+        }
 	}
 	fflush(stdout);
 }
@@ -2204,9 +2199,10 @@ rendermon(struct wl_listener *listener, void *data)
 	struct timespec now;
 
     // TODO: Render bar.
-    if (m->invalid) {
+    //if (!no_bar && m->invalid) {
+    if (!no_bar) {
         bar_draw(m);
-        m->invalid = false;
+        m->bar.invalid = false;
     }
 
 	/* Render if no XDG clients have an outstanding resize and are visible on

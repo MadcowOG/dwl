@@ -10,7 +10,7 @@ static const float focuscolor[]            = {1.0, 0.0, 0.0, 1.0};
 static const float fullscreen_bg[]         = {0.1, 0.1, 0.1, 1.0};
 static const char *fonts[] = {"monospace:size=13"};
 
-/* tagging - tagcount must be no greater than 31 */
+/* tagging - tag amount must be no greater than 31 */
 static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 
 static const pixman_color_t cyan  = { 0x0,    0x5555, 0x7777, 0xFFFF };
