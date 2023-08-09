@@ -166,7 +166,8 @@ static const Key keys[] = {
 };
 
 static const Button buttons[] = {
-	{ MODKEY, BTN_LEFT,   moveresize,     {.ui = CurMove} },
-	{ MODKEY, BTN_MIDDLE, togglefloating, {0} },
-	{ MODKEY, BTN_RIGHT,  moveresize,     {.ui = CurResize} },
+	{ MODKEY, BTN_LEFT,   moveresize,     click_client, {.ui = CurMove} },
+	{ MODKEY, BTN_MIDDLE, togglefloating, click_client, {0} },
+	{ MODKEY, BTN_RIGHT,  moveresize,     click_client, {.ui = CurResize} },
+    // TODO: Add bar clicked functions
 };

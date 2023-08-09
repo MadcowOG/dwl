@@ -80,15 +80,14 @@
 #define IDLE_NOTIFY_ACTIVITY    wlr_idle_notify_activity(idle, seat), wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
 #define TEXT_WIDTH(text, max)   (draw_text_fg_bg(NULL, NULL, NULL, NULL, FCFT_SUBPIXEL_NONE, text, 0, 0, max, 0, 0, 0, 0))
 #define VALUE_OR(data, default) (data ? data : default)
-#define STRINGIFY(str)          #str
-#define TITLE(title)            (VALUE_OR(title, ""))
-#define STATUS(status)          (VALUE_OR(status, ("dwl "STRINGIFY(VERSION))))
+#define STATUS(status)          (VALUE_OR(status, ("dwl "VERSION)))
 
 /* enums */
 enum { CurNormal, CurPressed, CurMove, CurResize }; /* cursor */
 enum { XDGShell, LayerShell, X11Managed, X11Unmanaged }; /* client types */
 enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrFS, LyrTop, LyrOverlay, LyrBlock, NUM_LAYERS }; /* scene layers */
 enum color_scheme { inactive_scheme = 0, active_scheme = 1, urgent_scheme = 2, };
+enum click_location { click_none = 0, click_client, click_tag, click_layout, click_title, click_status };
 
 #ifdef XWAYLAND
 enum { NetWMWindowTypeDialog, NetWMWindowTypeSplash, NetWMWindowTypeToolbar,
@@ -105,6 +104,7 @@ typedef union {
 typedef struct {
 	unsigned int mod;
 	unsigned int button;
+    enum click_location clicked;
 	void (*func)(const Arg *);
 	const Arg arg;
 } Button;
@@ -210,7 +210,7 @@ struct Monitor {
 
     /* Bar stuff */
     struct {
-        struct wlr_scene_tree *scene_tree;
+        struct wlr_scene_buffer *scene_buffer;
         int32_t size, stride, height, width;
         bool invalid, /* output and state does not match */
              visible; /* The visibility of the bar */
@@ -244,7 +244,7 @@ typedef struct {
 	struct wl_listener destroy;
 } SessionLock;
 
-struct shm_buffer {
+struct buffer {
     struct wlr_buffer base;
     size_t stride;
     uint32_t data[];
@@ -259,6 +259,7 @@ static void arrangelayer(Monitor *m, struct wl_list *list,
 static void arrangelayers(Monitor *m);
 static void axisnotify(struct wl_listener *listener, void *data);
 static void bar_draw(struct Monitor *monitor);
+static bool bar_accepts_input(struct wlr_scene_buffer *buffer, int sx, int sy);
 static void buffer_destroy(struct wlr_buffer *buffer);
 static bool buffer_begin_data_ptr_access(struct wlr_buffer *buffer, uint32_t flags, void **data, uint32_t *format, size_t *stride);
 static void buffer_end_data_ptr_access(struct wlr_buffer *buffer);
@@ -288,6 +289,7 @@ static void destroylocksurface(struct wl_listener *listener, void *data);
 static void destroynotify(struct wl_listener *listener, void *data);
 static void destroysessionlock(struct wl_listener *listener, void *data);
 static void destroysessionmgr(struct wl_listener *listener, void *data);
+static enum click_location determine_click(double x, double y);
 static Monitor *dirtomon(enum wlr_direction dir);
 static uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreground_color, pixman_image_t *background, const pixman_color_t *background_color, enum fcft_subpixel subpixel, const char *text, uint32_t left_padding, uint32_t bottom_padding, int32_t max_text_length, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 static void focusclient(Client *c, int lift);
@@ -617,8 +619,7 @@ axisnotify(struct wl_listener *listener, void *data)
 }
 
 void bar_draw(struct Monitor *monitor) {
-    struct shm_buffer *shm;
-    struct wlr_scene_buffer *scene_buffer;
+    struct buffer *buffer;
     pixman_image_t *main_image, *foreground, *background;
     const pixman_color_t *foreground_color, *background_color;
     enum color_scheme scheme;
@@ -630,11 +631,11 @@ void bar_draw(struct Monitor *monitor) {
 
     if (!monitor || no_bar) return;
 
-    shm = ecalloc(1, sizeof(*shm) + monitor->bar.size);
-    shm->stride = monitor->bar.stride;
-    wlr_buffer_init(&shm->base, &buffer_impl, monitor->bar.width, monitor->bar.height);
+    buffer = ecalloc(1, sizeof(*buffer) + monitor->bar.size);
+    buffer->stride = monitor->bar.stride;
+    wlr_buffer_init(&buffer->base, &buffer_impl, monitor->bar.width, monitor->bar.height);
 
-    main_image = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, shm->data, monitor->bar.stride);
+    main_image = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, buffer->data, monitor->bar.stride);
     foreground = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, NULL, monitor->bar.stride);
     background = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, NULL, monitor->bar.stride);
     status = STATUS(monitor->status);
@@ -753,33 +754,33 @@ void bar_draw(struct Monitor *monitor) {
     pixman_image_unref(background);
     pixman_image_unref(main_image);
 
-    scene_buffer = wlr_scene_buffer_create(monitor->bar.scene_tree, &shm->base);
-    wlr_buffer_drop(&shm->base);
-
-    wlr_scene_node_set_position(&scene_buffer->node, monitor->m.x, monitor->m.y + (bar_top ? 0 : monitor->wlr_output->height - monitor->bar.height));
+    wlr_scene_buffer_set_buffer(monitor->bar.scene_buffer, &buffer->base);
+    wlr_buffer_drop(&buffer->base);
 }
 
+bool bar_accepts_input(struct wlr_scene_buffer *buffer, int sx, int sy) { return true; }
+
 void buffer_destroy(struct wlr_buffer *wlr_buffer) {
-    struct shm_buffer *buffer;
+    struct buffer *buffer;
     buffer = wl_container_of(wlr_buffer, buffer, base);
     free(buffer);
 }
 
 bool buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buffer, uint32_t flags, void **data, uint32_t *format, size_t *stride) {
-    struct shm_buffer *buffer;
+    struct buffer *buffer;
     buffer = wl_container_of(wlr_buffer, buffer, base);
 
     if (flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE) return false;
 
     *data   = buffer->data;
-    *format = DRM_FORMAT_ARGB8888;
     *stride = buffer->stride;
+    *format = DRM_FORMAT_ARGB8888;
 
     return true;
 }
 
 void buffer_end_data_ptr_access(struct wlr_buffer *buffer) {
-    /* Nothing to destroy */
+    /* Noop */
 }
 
 void
@@ -787,9 +788,15 @@ buttonpress(struct wl_listener *listener, void *data)
 {
 	struct wlr_pointer_button_event *event = data;
 	struct wlr_keyboard *keyboard;
+    enum click_location click;
 	uint32_t mods;
 	Client *c;
 	const Button *b;
+
+    // TODO: Get clicking on bar working. We want to determine the click location.
+    // Probably just use a detemine_click_location function. Or just do it here.
+    click = determine_click(cursor->x, cursor->y);
+    if (click == click_none) return;
 
 	IDLE_NOTIFY_ACTIVITY;
 
@@ -807,11 +814,12 @@ buttonpress(struct wl_listener *listener, void *data)
 		keyboard = wlr_seat_get_keyboard(seat);
 		mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
 		for (b = buttons; b < END(buttons); b++) {
-			if (CLEANMASK(mods) == CLEANMASK(b->mod) &&
-					event->button == b->button && b->func) {
-				b->func(&b->arg);
-				return;
-			}
+            if (CLEANMASK(mods) != CLEANMASK(b->mod) || event->button != b->button || click != b->clicked || !b->func) {
+                continue;
+            }
+
+            b->func(&b->arg);
+            return;
 		}
 		break;
 	case WLR_BUTTON_RELEASED:
@@ -834,8 +842,10 @@ buttonpress(struct wl_listener *listener, void *data)
 	}
 	/* If the event wasn't handled by the compositor, notify the client with
 	 * pointer focus that a button press has occurred */
-	wlr_seat_pointer_notify_button(seat,
-			event->time_msec, event->button, event->state);
+    if (click != click_client) {
+        wlr_seat_pointer_notify_button(seat,
+                event->time_msec, event->button, event->state);
+    }
 }
 
 void
@@ -1192,7 +1202,8 @@ createmon(struct wl_listener *listener, void *data)
 	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, LENGTH(m->ltsymbol));
 
     if (!no_bar) {
-        m->bar.scene_tree = wlr_scene_tree_create(layers[LyrBottom]);
+        m->bar.scene_buffer = wlr_scene_buffer_create(layers[LyrBottom], NULL);
+        m->bar.scene_buffer->node.data = m;
         m->bar.invalid = true;
         m->bar.visible = true;
         m->bar.width = m->wlr_output->width;
@@ -1200,6 +1211,8 @@ createmon(struct wl_listener *listener, void *data)
         m->bar.stride = 4 * m->bar.width;
         m->bar.size = m->bar.stride * m->bar.height;
         m->status = NULL;
+
+        wlr_scene_node_set_position(&m->bar.scene_buffer->node, m->m.x, m->m.y + (bar_top ? 0 : m->wlr_output->height - m->bar.height));
     }
 }
 
@@ -1409,6 +1422,36 @@ destroysessionmgr(struct wl_listener *listener, void *data)
 {
 	wl_list_remove(&session_lock_create_lock.link);
 	wl_list_remove(&session_lock_mgr_destroy.link);
+}
+
+enum click_location determine_click(double x, double y) {
+    struct wlr_scene_node *node;
+    struct wlr_scene_buffer *buffer;
+    Monitor *m;
+    Client *c;
+    int32_t bar_x;
+
+    m = xytomon(x, y);
+
+    xytonode(x, y, NULL, &c, NULL, NULL, NULL);
+    if (c) return click_client;
+
+    node = wlr_scene_node_at(&scene->tree.node, x, y, NULL, NULL);
+    if (!node) return click_none;
+
+    if (!no_bar && (buffer = wlr_scene_buffer_from_node(node)) && buffer == m->bar.scene_buffer && m->bar.visible) {
+        bar_x = 0;
+        x -= m->m.x;
+
+        for (int i = 0; i < LENGTH(tags); i++) {
+            // TODO: Get the tag x and check with x to see if it's within it.
+        }
+        // TODO: Get the layout x and check with x.
+        // TODO: Get title x and check with x.
+        // TODO: Get status x and check with status_on_active and x.
+    }
+
+    return click_none;
 }
 
 Monitor *
@@ -2934,6 +2977,7 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 		Client **pc, LayerSurface **pl, double *nx, double *ny)
 {
 	struct wlr_scene_node *node, *pnode;
+    struct wlr_scene_surface *scene_surface;
 	struct wlr_surface *surface = NULL;
 	Client *c = NULL;
 	LayerSurface *l = NULL;
@@ -2944,8 +2988,9 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 			continue;
 
 		if (node->type == WLR_SCENE_NODE_BUFFER)
-			surface = wlr_scene_surface_from_buffer(
-					wlr_scene_buffer_from_node(node))->surface;
+                scene_surface = wlr_scene_surface_from_buffer(wlr_scene_buffer_from_node(node));
+                if (!scene_surface) continue;
+                surface = scene_surface->surface;
 		/* Walk the tree to find a node that knows the client */
 		for (pnode = node; pnode && !c; pnode = &pnode->parent->node)
 			c = pnode->data;
