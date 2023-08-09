@@ -3124,5 +3124,5 @@ main(int argc, char *argv[])
 	return EXIT_SUCCESS;
 
 usage:
-	die("Usage: %s [-v] [-s startup command]", argv[0]);
+	die("Usage: %s [-v] [-s startup command] [-n]", argv[0]);
 }
