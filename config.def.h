@@ -1,4 +1,5 @@
 /* appearance */
+#include <linux/input-event-codes.h>
 static const int sloppyfocus               = 1;  /* focus follows mouse */
 static const int bypass_surface_visibility = 0;  /* 1 means idle inhibitors will disable idle tracking even if it's surface isn't visible  */
 static const int bar_top                   = 1;
@@ -118,7 +119,7 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
 
 /* commands */
-static const char *termcmd[] = { "foot", NULL };
+static const char *termcmd[] = { "alacritty", NULL };
 static const char *menucmd[] = { "bemenu-run", NULL };
 
 static const Key keys[] = {
@@ -169,5 +170,12 @@ static const Button buttons[] = {
 	{ MODKEY, BTN_LEFT,   moveresize,     click_client, {.ui = CurMove} },
 	{ MODKEY, BTN_MIDDLE, togglefloating, click_client, {0} },
 	{ MODKEY, BTN_RIGHT,  moveresize,     click_client, {.ui = CurResize} },
-    // TODO: Add bar clicked functions
+    { 0,      BTN_LEFT,   setlayout,      click_layout, {0} },
+    { 0,      BTN_RIGHT,  setlayout,      click_layout, {.v = &layouts[2]} },
+    { 0,      BTN_MIDDLE, zoom,           click_title,  {0} },
+    { 0,      BTN_MIDDLE, spawn,          click_status, {.v = termcmd} },
+    { 0,      BTN_LEFT,   view,           click_tag,    {0} },
+    { 0,      BTN_RIGHT,  toggleview,     click_tag,    {0} },
+    { MODKEY, BTN_LEFT,   tag,            click_tag,    {0} },
+    { MODKEY, BTN_RIGHT,  toggletag,      click_tag,    {0} },
 };
