@@ -10,8 +10,10 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
@@ -80,7 +82,7 @@
 #define IDLE_NOTIFY_ACTIVITY    wlr_idle_notify_activity(idle, seat), wlr_idle_notifier_v1_notify_activity(idle_notifier, seat)
 #define TEXT_WIDTH(text, max)   (draw_text_fg_bg(NULL, NULL, NULL, NULL, FCFT_SUBPIXEL_NONE, text, 0, 0, max, 0, 0, 0, 0))
 #define VALUE_OR(data, default) (data ? data : default)
-#define STATUS(status)          (VALUE_OR(status, ("dwl "VERSION)))
+#define STATUS(status)          (VALUE_OR(status, ("dwl " VERSION)))
 
 /* enums */
 enum { CurNormal, CurPressed, CurMove, CurResize }; /* cursor */
@@ -206,7 +208,6 @@ struct Monitor {
 	double mfact;
 	int nmaster;
 	char ltsymbol[16];
-    char *status;
 
     /* Bar stuff */
     struct {
@@ -214,6 +215,7 @@ struct Monitor {
         struct wlr_scene_buffer *scene_buffer;
         int32_t size, stride, height, width;
         bool visible; /* The visibility of the bar */
+        char *status;
     } bar;
 };
 
@@ -292,6 +294,8 @@ static void destroysessionmgr(struct wl_listener *listener, void *data);
 static enum click_location determine_click(double x, double y, uint32_t *tag);
 static Monitor *dirtomon(enum wlr_direction dir);
 static uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreground_color, pixman_image_t *background, const pixman_color_t *background_color, enum fcft_subpixel subpixel, const char *text, uint32_t left_padding, uint32_t bottom_padding, int32_t max_text_length, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+static int fifo_in(int fd, uint32_t mask, void *data);
+static void fifo_setup(void);
 static void focusclient(Client *c, int lift);
 static void focusmon(const Arg *arg);
 static void focusstack(const Arg *arg);
@@ -343,6 +347,7 @@ static void togglefloating(const Arg *arg);
 static void togglefullscreen(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
+static void toggle_bar_visibility(const Arg *arg);
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
 static void unmapnotify(struct wl_listener *listener, void *data);
@@ -403,6 +408,9 @@ static struct wlr_output_layout *output_layout;
 static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
+static int32_t fifo_fd;
+static struct wl_event_source *fifo_source;
+static char *fifo_path;
 static struct fcft_font *font;
 static bool no_bar = false;
 
@@ -629,7 +637,7 @@ void bar_draw(struct Monitor *monitor) {
     bool urgent, occupied, viewed, has_focused, floating, selected;
     Client *client;
 
-    if (!monitor || no_bar) return;
+    if (no_bar || !monitor || !monitor->bar.visible) return;
 
     buffer = ecalloc(1, sizeof(*buffer) + monitor->bar.size);
     buffer->stride = monitor->bar.stride;
@@ -638,7 +646,7 @@ void bar_draw(struct Monitor *monitor) {
     main_image = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, buffer->data, monitor->bar.stride);
     foreground = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, NULL, monitor->bar.stride);
     background = pixman_image_create_bits(PIXMAN_a8r8g8b8, monitor->bar.width, monitor->bar.height, NULL, monitor->bar.stride);
-    status = STATUS(monitor->status);
+    status = STATUS(monitor->bar.status);
     x = client_tags = urgent_tags = occupied_tags = 0;
     bottom_padding = ((monitor->bar.height + font->descent) / 2) + (monitor->bar.height / 6);
     boxs = font->height / 9;
@@ -740,7 +748,7 @@ void bar_draw(struct Monitor *monitor) {
     monitor->bar.title_x = x;
 
     /* draw status */
-    if (status_on_active && selected) {
+    if ((status_on_active && selected) || !status_on_active) {
         foreground_color = &schemes[inactive_scheme][0];
         background_color = &schemes[inactive_scheme][1];
 
@@ -900,6 +908,9 @@ cleanup(void)
 	wl_display_destroy(dpy);
     fcft_destroy(font);
     fcft_fini();
+    close(fifo_fd);
+    unlink(fifo_path);
+    free(fifo_path);
 }
 
 void
@@ -1187,7 +1198,7 @@ createmon(struct wl_listener *listener, void *data)
         m->bar.height = font->height + 2;
         m->bar.stride = 4 * m->bar.width;
         m->bar.size = m->bar.stride * m->bar.height;
-        m->status = NULL;
+        m->bar.status = NULL;
     }
 
 	wl_list_insert(&mons, &m->link);
@@ -1544,6 +1555,112 @@ uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreg
     if (text_image) pixman_image_unref(text_image);
 
     return tx;
+}
+
+int fifo_in(int fd, uint32_t mask, void *data) {
+    Monitor *monitor;
+    FILE *fifo_file;
+    size_t size;
+    char *line, *output_name, *command, *value;
+
+    if (mask & WL_EVENT_ERROR) {
+        wl_event_source_remove(fifo_source);
+        close(fifo_fd);
+        unlink(fifo_path);
+        free(fifo_path);
+
+        fifo_fd = -1;
+        fifo_path = NULL;
+
+        if (!no_bar) {
+            wl_list_for_each(monitor, &mons, link) {
+                monitor->bar.status = NULL;
+            }
+        }
+        return 0;
+    }
+
+    fifo_file = fdopen(dup(fd), "r");
+    size = 0;
+    line = NULL;
+    monitor = NULL;
+    while (true) {
+        if (getline(&line, &size, fifo_file) == -1) break;
+
+        command = strtok(line, " ");
+        if (!command) continue;
+
+        if (strcmp(command, "monitor") == 0) {
+            output_name = strtok(NULL, "\n");
+            if (!output_name) continue;
+
+            wl_list_for_each(monitor, &mons, link) {
+                if (strcmp(output_name, monitor->wlr_output->name) == 0) break;
+            }
+            // Make sure we have the desired monitor after the loop.
+            if (strcmp(output_name, monitor->wlr_output->name) != 0 && strcmp(output_name, "selected") != 0) {
+                monitor = NULL;
+                continue;
+            }
+            if (strcmp(output_name, "selected") == 0) {
+                wl_list_for_each(monitor, &mons, link) {
+                    if (monitor == selmon) break;
+                }
+            }
+        }
+        else if (strcmp(command, "status") == 0) {
+            if (no_bar) continue;
+
+            value = strtok(NULL, "\n");
+            if (!value) continue;
+
+            if (!monitor) {
+                wl_list_for_each(monitor, &mons, link) {
+                    free(monitor->bar.status);
+                    monitor->bar.status = strdup(value);
+                }
+                monitor = NULL;
+            }
+            else {
+                free(monitor->bar.status);
+                monitor->bar.status = strdup(value);
+            }
+        }
+    }
+    free(line);
+    fclose(fifo_file);
+
+    if (!no_bar) {
+        wl_list_for_each(monitor, &mons, link) {
+            bar_draw(monitor);
+        }
+    }
+
+    return 0;
+}
+
+void fifo_setup(void) {
+    size_t len;
+    const char *runtime_path = getenv("XDG_RUNTIME_DIR");
+    if (!runtime_path) die("runtime_path");
+
+    for (int i = 0; i < 100; i++) {
+        len = snprintf(NULL, 0, "%s/dwl-%d", runtime_path, i) + 1;
+        fifo_path = ecalloc(1, len);
+        snprintf(fifo_path, len, "%s/dwl-%d", runtime_path, i);
+
+        if (mkfifo(fifo_path, 0666) == -1) {
+            if (errno != EEXIST) die("mkfifo");
+            free(fifo_path);
+            continue;
+        }
+
+        if ((fifo_fd = open(fifo_path, O_CLOEXEC | O_RDWR | O_NONBLOCK)) == -1) die("fifo_fd == -1");
+
+        return;
+    }
+
+    die("fifo_setup");
 }
 
 void
@@ -2676,6 +2793,9 @@ setup(void)
     if (!fcft_set_scaling_filter(FCFT_SCALING_FILTER_LANCZOS3)) die("fcft_set_scaling_filter");
     font = fcft_from_name(LENGTH(fonts), fonts, NULL);
     if (!font) die("fcft_from_name");
+
+    fifo_setup();
+    fifo_source = wl_event_loop_add_fd(wl_display_get_event_loop(dpy), fifo_fd, WL_EVENT_READABLE, fifo_in, NULL);
 }
 
 void
@@ -2819,6 +2939,13 @@ toggleview(const Arg *arg)
 		arrange(selmon);
 	}
 	printstatus();
+}
+
+void toggle_bar_visibility(const Arg *arg) {
+    if (!selmon || no_bar) return;
+
+    selmon->bar.visible = !selmon->bar.visible;
+    wlr_scene_node_set_enabled(&selmon->bar.scene_buffer->node, selmon->bar.visible);
 }
 
 void
