@@ -803,8 +803,6 @@ buttonpress(struct wl_listener *listener, void *data)
     Arg arg = { .v = NULL };
 
     click = determine_click(cursor->x, cursor->y, &tag);
-    if (click == click_none) return;
-
     if (click == click_tag) arg.ui = tag;
 
 	IDLE_NOTIFY_ACTIVITY;
@@ -851,10 +849,8 @@ buttonpress(struct wl_listener *listener, void *data)
 	}
 	/* If the event wasn't handled by the compositor, notify the client with
 	 * pointer focus that a button press has occurred */
-    if (click == click_client) {
-        wlr_seat_pointer_notify_button(seat,
-                event->time_msec, event->button, event->state);
-    }
+    if (click == click_client) wlr_seat_pointer_notify_button(seat,
+            event->time_msec, event->button, event->state);
 }
 
 void
