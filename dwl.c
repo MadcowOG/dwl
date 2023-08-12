@@ -2612,8 +2612,6 @@ setup(void)
 {
 	int i, sig[] = {SIGCHLD, SIGINT, SIGTERM, SIGPIPE};
 	struct sigaction sa = {.sa_flags = SA_RESTART, .sa_handler = handlesig};
-	/* Set up signal handlers */
-	struct sigaction sa = {.sa_flags = SA_RESTART, .sa_handler = sigchld};
 	sigemptyset(&sa.sa_mask);
 
 	for (i = 0; i < LENGTH(sig); i++)
