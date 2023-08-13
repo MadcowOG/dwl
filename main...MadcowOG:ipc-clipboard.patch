@@ -1,0 +1,55 @@
+From 24ee9c7588b28a3c1b1828b902149e5cc95c7afb Mon Sep 17 00:00:00 2001
+From: MadcowOG <N/A>
+Date: Wed, 1 Mar 2023 13:00:39 -0800
+Subject: [PATCH] Created clipboard watcher
+
+---
+ Makefile              |  4 +++-
+ dwl-clipboard-watcher | 19 +++++++++++++++++++
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+ create mode 100644 dwl-clipboard-watcher
+
+diff --git a/Makefile b/Makefile
+index ccca0794..7748a55a 100644
+--- a/Makefile
++++ b/Makefile
+@@ -49,11 +49,13 @@ install: dwl
+ 	mkdir -p $(DESTDIR)$(PREFIX)/bin
+ 	cp -f dwl $(DESTDIR)$(PREFIX)/bin
+ 	chmod 755 $(DESTDIR)$(PREFIX)/bin/dwl
++	cp -f dwl-clipboard-watcher $(DESTDIR)$(PREFIX)/bin/dwl-clipboard-watcher
++	chmod 755 $(DESTDIR)$(PREFIX)/bin/dwl-clipboard-watcher
+ 	mkdir -p $(DESTDIR)$(MANDIR)/man1
+ 	cp -f dwl.1 $(DESTDIR)$(MANDIR)/man1
+ 	chmod 644 $(DESTDIR)$(MANDIR)/man1/dwl.1
+ uninstall:
+-	rm -f $(DESTDIR)$(PREFIX)/bin/dwl $(DESTDIR)$(MANDIR)/man1/dwl.1
++	rm -f $(DESTDIR)$(PREFIX)/bin/dwl $(DESTDIR)$(MANDIR)/man1/dwl.1 $(DESTDIR)$(PREFIX)/bin/dwl-clipboard-watcher
+ 
+ .SUFFIXES: .c .o
+ .c.o:
+diff --git a/dwl-clipboard-watcher b/dwl-clipboard-watcher
+new file mode 100644
+index 00000000..36a58592
+--- /dev/null
++++ b/dwl-clipboard-watcher
+@@ -0,0 +1,19 @@
++#! /bin/sh
++
++app_id=$(dwl-state -pn)
++excludes=("'org.keepassxc.KeePassXC'")
++
++function check_excludes {
++    for exclude in "${excludes[@]}"; do
++        if [[ "$app_id" == "$exclude" ]]; then
++            return 1;
++        fi
++    done
++
++    return 0;
++}
++
++check_excludes
++if [[ "$?" == "0" ]]; then
++    clipman store --no-persist
++fi
