@@ -7,12 +7,12 @@ static const int monoclegaps               = 0;  /* 1 means outer gaps in monocl
 static const int bar_top                   = 1;
 static const int status_on_active          = 0;
 static const unsigned int borderpx         = 1;  /* border pixel of windows */
-static const unsigned int gappih           = 10; /* horiz inner gap between windows */
-static const unsigned int gappiv           = 10; /* vert inner gap between windows */
-static const unsigned int gappoh           = 10; /* horiz outer gap between windows and screen edge */
-static const unsigned int gappov           = 10; /* vert outer gap between windows and screen edge */
-static const float bordercolor[]           = {0.5, 0.5, 0.5, 1.0};
-static const float focuscolor[]            = {1.0, 0.0, 0.0, 1.0};
+static const unsigned int gappih           = 5; /* horiz inner gap between windows */
+static const unsigned int gappiv           = 5; /* vert inner gap between windows */
+static const unsigned int gappoh           = 5; /* horiz outer gap between windows and screen edge */
+static const unsigned int gappov           = 5; /* vert outer gap between windows and screen edge */
+static const float bordercolor[]           = {(double)68/255, (double)68/255, (double)68/255, 1.0};
+static const float focuscolor[]            = {0.0, (double)85/255, (double)119/255, 1.0};
 /* To conform the xdg-protocol, set the alpha to zero to restore the old behavior */
 static const float fullscreen_bg[]         = {0.1, 0.1, 0.1, 1.0};
 static const char *fonts[] = {"monospace:size=13"};
@@ -30,6 +30,9 @@ static const char *const autostart[] = {
     //"gsettings", "set ", "org.gnome.desktop.interface", "gtk-theme", "'Adwaita-dark'", NULL,
     NULL /* terminate */
 };
+
+/* pointer constraints */
+static const int allow_constrain      = 1;
 
 /* tagging - tag amount must be no greater than 31 */
 static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9" };
@@ -69,6 +72,8 @@ static const MonitorRule monrules[] = {
 	{ "eDP-1",    0.5,  1,      2,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 },
 	*/
 	/* defaults */
+    { "HDMI-A-1", 0.55, 1,      1,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   0,    0  },
+    { "DP-1",     0.55, 1,      1,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   1920, 0  },
 	{ NULL,       0.55, 1,      1,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 },
 };
 
@@ -142,9 +147,14 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
 /* helper for spawning shell commands in the pre dwm-5.0 fashion */
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
 
+static const char col_gray1[] = "#222222";
+static const char col_gray3[] = "#bbbbbb";
+static const char col_gray4[] = "#eeeeee";
+static const char col_cyan[]  = "#005577";
+
 /* commands */
 static const char *termcmd[] = { "alacritty", NULL };
-static const char *menucmd[] = { "bemenu-run", NULL };
+static const char *menucmd[] = { "bemenu-run", "-H", "21", "--prompt", "", "--hb", col_cyan, "--hf", col_gray4, "--nb", col_gray1, "--nf", col_gray3, "--ab", col_gray1, "--af", col_gray3, "--fb", col_gray1, "--ff", col_gray3, "--sb", col_gray1, "--sf", col_gray3, NULL };
 
 static const Key keys[] = {
 	/* Note that Shift changes certain key codes: c -> C, 2 -> at, etc. */
@@ -198,7 +208,11 @@ static const Key keys[] = {
 	TAGKEYS(          XKB_KEY_7, XKB_KEY_ampersand,                         6),
 	TAGKEYS(          XKB_KEY_8, XKB_KEY_asterisk,                          7),
 	TAGKEYS(          XKB_KEY_9, XKB_KEY_parenleft,                         8),
-	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_Q,          quit,                  {0} },
+	{ MODKEY|WLR_MODIFIER_CTRL|WLR_MODIFIER_SHIFT, XKB_KEY_Q,          quit,                  {0} },
+    { MODKEY,                    XKB_KEY_grave,      spawn,          SHCMD("/usr/bin/pactl set-source-mute alsa_input.usb-PreSonus_AudioBox_USB_96_000000000000-00.analog-stereo toggle") },
+    { MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_L,          spawn,          SHCMD("/usr/bin/swaylock -e -l -c '<eeeeee>'") },
+    { MODKEY,                    XKB_KEY_Sys_Req,    spawn,          SHCMD("/usr/bin/grim -o \"$(dwl-state -a)\" ~/Pictures/Screenshots/\"$(date '+%Y%m%d-%H%M%S').png\"") },
+    { 0,                         XKB_KEY_Print,      spawn,          SHCMD("/usr/bin/grim -g \"$(slurp)\" ~/Pictures/Screenshots/\"$(date '+%Y%m%d-%H%M%S').png\"") },
 
 	/* Ctrl-Alt-Backspace and Ctrl-Alt-Fx used to be handled by X server */
 	{ WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT,XKB_KEY_Terminate_Server, quit, {0} },

@@ -1,6 +1,7 @@
 /*
  * See LICENSE file for copyright and license details.
  */
+#include <assert.h>
 #include <getopt.h>
 #include <libinput.h>
 #include <limits.h>
@@ -35,14 +36,17 @@
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_input_inhibitor.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_keyboard_shortcuts_inhibit_v1.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_presentation_time.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_seat.h>
@@ -69,6 +73,7 @@
 #include <xcb/xcb_icccm.h>
 #endif
 
+#include "dwl-ipc-unstable-v2-protocol.h"
 #include "util.h"
 
 /* macros */
@@ -150,6 +155,12 @@ struct Client {
 };
 
 typedef struct {
+    struct wl_list link;
+    struct wl_resource *resource;
+    Monitor *monitor;
+} DwlIpcOutput;
+
+typedef struct {
 	uint32_t mod;
 	xkb_keysym_t keysym;
 	void (*func)(const Arg *);
@@ -195,6 +206,7 @@ typedef struct {
 
 struct Monitor {
 	struct wl_list link;
+    struct wl_list dwl_ipc_outputs;
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
 	struct wlr_scene_rect *fullscreen_bg; /* See createmon() for info */
@@ -236,6 +248,14 @@ typedef struct {
 	enum wl_output_transform rr;
 	int x, y;
 } MonitorRule;
+
+struct pointer_constraint {
+	struct wlr_pointer_constraint_v1 *constraint;
+
+	struct wl_listener set_region;
+	struct wl_listener destroy;
+};
+
 
 typedef struct {
 	const char *id;
@@ -293,6 +313,8 @@ static void createlocksurface(struct wl_listener *listener, void *data);
 static void createmon(struct wl_listener *listener, void *data);
 static void createnotify(struct wl_listener *listener, void *data);
 static void createpointer(struct wlr_pointer *pointer);
+static void createpointerconstraint(struct wl_listener *listener, void *data);
+static void createshortcutsinhibitor(struct wl_listener *listener, void *data);
 static void cursorframe(struct wl_listener *listener, void *data);
 static void defaultgaps(const Arg *arg);
 static void destroydragicon(struct wl_listener *listener, void *data);
@@ -303,8 +325,21 @@ static void destroylocksurface(struct wl_listener *listener, void *data);
 static void destroynotify(struct wl_listener *listener, void *data);
 static void destroysessionlock(struct wl_listener *listener, void *data);
 static void destroysessionmgr(struct wl_listener *listener, void *data);
+static void destroyshortcutsinhibitmgr(struct wl_listener *listener, void *data);
+static void destroypointerconstraint(struct wl_listener *listener, void *data);
 static enum click_location determine_click(double x, double y, uint32_t *tag);
 static Monitor *dirtomon(enum wlr_direction dir);
+static void dwl_ipc_manager_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+static void dwl_ipc_manager_destroy(struct wl_resource *resource);
+static void dwl_ipc_manager_get_output(struct wl_client *client, struct wl_resource *resource, uint32_t id, struct wl_resource *output);
+static void dwl_ipc_manager_release(struct wl_client *client, struct wl_resource *resource);
+static void dwl_ipc_output_destroy(struct wl_resource *resource);
+static void dwl_ipc_output_printstatus(Monitor *monitor);
+static void dwl_ipc_output_printstatus_to(DwlIpcOutput *ipc_output);
+static void dwl_ipc_output_set_client_tags(struct wl_client *client, struct wl_resource *resource, uint32_t and_tags, uint32_t xor_tags);
+static void dwl_ipc_output_set_layout(struct wl_client *client, struct wl_resource *resource, uint32_t index);
+static void dwl_ipc_output_set_tags(struct wl_client *client, struct wl_resource *resource, uint32_t tagmask, uint32_t toggle_tagset);
+static void dwl_ipc_output_release(struct wl_client *client, struct wl_resource *resource);
 static uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreground_color, pixman_image_t *background, const pixman_color_t *background_color, enum fcft_subpixel subpixel, const char *text, uint32_t left_padding, uint32_t bottom_padding, int32_t max_text_length, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 static int fifo_in(int fd, uint32_t mask, void *data);
 static void fifo_setup(void);
@@ -313,6 +348,7 @@ static void focusmon(const Arg *arg);
 static void focusstack(const Arg *arg);
 static Client *focustop(Monitor *m);
 static void fullscreennotify(struct wl_listener *listener, void *data);
+static void handleconstraintcommit(struct wl_listener *listener, void *data);
 static void handlesig(int signo);
 static void incnmaster(const Arg *arg);
 static void incgaps(const Arg *arg);
@@ -412,6 +448,7 @@ static struct wlr_idle *idle;
 static struct wlr_idle_notifier_v1 *idle_notifier;
 static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
 static struct wlr_input_inhibit_manager *input_inhibit_mgr;
+static struct wlr_keyboard_shortcuts_inhibit_manager_v1 *shortcuts_inhibit_mgr;
 static struct wlr_layer_shell_v1 *layer_shell;
 static struct wlr_output_manager_v1 *output_mgr;
 static struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_mgr;
@@ -441,6 +478,11 @@ static bool no_bar = false;
 
 static int enablegaps = 1;   /* enables gaps, used by togglegaps */
 
+struct wlr_pointer_constraints_v1 *pointer_constraints;
+struct wlr_pointer_constraint_v1 *active_constraint;
+static struct wl_listener constraint_commit;
+struct wlr_relative_pointer_manager_v1 *relative_pointer_manager;
+
 /* global event handlers */
 static struct wl_listener cursor_axis = {.notify = axisnotify};
 static struct wl_listener cursor_button = {.notify = buttonpress};
@@ -448,14 +490,18 @@ static struct wl_listener cursor_frame = {.notify = cursorframe};
 static struct wl_listener cursor_motion = {.notify = motionrelative};
 static struct wl_listener cursor_motion_absolute = {.notify = motionabsolute};
 static struct wl_listener drag_icon_destroy = {.notify = destroydragicon};
+static struct zdwl_ipc_manager_v2_interface dwl_manager_implementation = {.release = dwl_ipc_manager_release, .get_output = dwl_ipc_manager_get_output};
+static struct zdwl_ipc_output_v2_interface dwl_output_implementation = {.release = dwl_ipc_output_release, .set_tags = dwl_ipc_output_set_tags, .set_layout = dwl_ipc_output_set_layout, .set_client_tags = dwl_ipc_output_set_client_tags};
 static struct wl_listener idle_inhibitor_create = {.notify = createidleinhibitor};
 static struct wl_listener idle_inhibitor_destroy = {.notify = destroyidleinhibitor};
 static struct wl_listener layout_change = {.notify = updatemons};
 static struct wl_listener new_input = {.notify = inputdevice};
 static struct wl_listener new_virtual_keyboard = {.notify = virtualkeyboard};
 static struct wl_listener new_output = {.notify = createmon};
+static struct wl_listener new_shortcuts_inhibitor = {.notify = createshortcutsinhibitor};
 static struct wl_listener new_xdg_surface = {.notify = createnotify};
 static struct wl_listener new_xdg_decoration = {.notify = createdecoration};
+static struct wl_listener pointer_constraint_create = {.notify = createpointerconstraint};
 static struct wl_listener new_layer_shell_surface = {.notify = createlayersurface};
 static struct wl_listener output_mgr_apply = {.notify = outputmgrapply};
 static struct wl_listener output_mgr_test = {.notify = outputmgrtest};
@@ -467,6 +513,7 @@ static struct wl_listener request_start_drag = {.notify = requeststartdrag};
 static struct wl_listener start_drag = {.notify = startdrag};
 static struct wl_listener session_lock_create_lock = {.notify = locksession};
 static struct wl_listener session_lock_mgr_destroy = {.notify = destroysessionmgr};
+static struct wl_listener shortcuts_inhibit_mgr_destroy = {.notify = destroyshortcutsinhibitmgr};
 static const struct wlr_buffer_impl buffer_impl = {
     .destroy = buffer_destroy,
     .begin_data_ptr_access = buffer_begin_data_ptr_access,
@@ -996,6 +1043,9 @@ cleanupmon(struct wl_listener *listener, void *data)
 	LayerSurface *l, *tmp;
 	int i;
 
+    DwlIpcOutput *ipc_output;
+    wl_list_for_each(ipc_output, &m->dwl_ipc_outputs, link)
+        wl_resource_destroy(ipc_output->resource);
 	for (i = 0; i <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; i++)
 		wl_list_for_each_safe(l, tmp, &m->layers[i], link)
 			wlr_layer_surface_v1_destroy(l->layer_surface);
@@ -1243,6 +1293,7 @@ createmon(struct wl_listener *listener, void *data)
 	Monitor *m = wlr_output->data = ecalloc(1, sizeof(*m));
 	m->wlr_output = wlr_output;
 
+    wl_list_init(&m->dwl_ipc_outputs);
 	wlr_output_init_render(wlr_output, alloc, drw);
 
 	/* Initialize monitor state using configured rules */
@@ -1326,6 +1377,30 @@ createmon(struct wl_listener *listener, void *data)
 	else
 		wlr_output_layout_add(output_layout, wlr_output, m->m.x, m->m.y);
 	strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, LENGTH(m->ltsymbol));
+}
+
+void
+createpointerconstraint(struct wl_listener *listener, void *data)
+{
+	if (focustop(selmon)) {
+		struct wlr_pointer_constraint_v1 *constraint = data;
+		struct pointer_constraint *pointer_constraint = calloc(1, sizeof(struct pointer_constraint));
+		pointer_constraint->constraint = constraint;
+
+		pointer_constraint->destroy.notify = destroypointerconstraint;
+		wl_signal_add(&constraint->events.destroy, &pointer_constraint->destroy);
+
+		if (client_surface(focustop(selmon)) == constraint->surface) {
+			if (allow_constrain == 0 || active_constraint == constraint)
+				return;
+
+			active_constraint = constraint;
+			wlr_pointer_constraint_v1_send_activated(constraint);
+
+			constraint_commit.notify = handleconstraintcommit;
+			wl_signal_add(&constraint->surface->events.commit, &constraint_commit);
+		}
+	}
 }
 
 void
@@ -1416,6 +1491,29 @@ createpointer(struct wlr_pointer *pointer)
 	}
 
 	wlr_cursor_attach_input_device(cursor, &pointer->base);
+}
+
+void createshortcutsinhibitor(struct wl_listener *listener, void *data) {
+    wlr_keyboard_shortcuts_inhibitor_v1_activate(data);
+}
+
+void
+destroypointerconstraint(struct wl_listener *listener, void *data)
+{
+	struct wlr_pointer_constraint_v1 *constraint = data;
+	struct pointer_constraint *pointer_constraint = wl_container_of(listener, pointer_constraint, destroy);
+
+	wl_list_remove(&pointer_constraint->destroy.link);
+
+	if (active_constraint == constraint) {
+		if (constraint_commit.link.next != NULL) {
+			wl_list_remove(&constraint_commit.link);
+		}
+		wl_list_init(&constraint_commit.link);
+		active_constraint = NULL;
+	}
+
+	free(pointer_constraint);
 }
 
 void
@@ -1561,6 +1659,7 @@ enum click_location determine_click(double x, double y, uint32_t *tag) {
 
     if (!no_bar && (buffer = wlr_scene_buffer_from_node(node)) && buffer == m->bar.scene_buffer && m->bar.visible) {
         bar_x = 0;
+        x -= m->m.x;
 
         if (m->bar.tags_x > x) {
             for (int i = 0; i < LENGTH(tags); i++) {
@@ -1583,6 +1682,11 @@ enum click_location determine_click(double x, double y, uint32_t *tag) {
     }
 
     return click_none;
+}
+
+void destroyshortcutsinhibitmgr(struct wl_listener *listener, void *data) {
+    wl_list_remove(&new_shortcuts_inhibitor.link);
+    wl_list_remove(&shortcuts_inhibit_mgr_destroy.link);
 }
 
 Monitor *
@@ -1767,6 +1871,167 @@ void fifo_setup(void) {
     }
 
     die("fifo_setup");
+}
+
+void dwl_ipc_manager_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *manager_resource = wl_resource_create(client, &zdwl_ipc_manager_v2_interface, version, id);
+    if (!manager_resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(manager_resource, &dwl_manager_implementation, NULL, dwl_ipc_manager_destroy);
+
+    zdwl_ipc_manager_v2_send_tags(manager_resource, LENGTH(tags));
+
+    for (int i = 0; i < LENGTH(layouts); i++)
+        zdwl_ipc_manager_v2_send_layout(manager_resource, layouts[i].symbol);
+}
+
+void dwl_ipc_manager_destroy(struct wl_resource *resource) {
+    /* No state to destroy */
+}
+
+void dwl_ipc_manager_get_output(struct wl_client *client, struct wl_resource *resource, uint32_t id, struct wl_resource *output) {
+    DwlIpcOutput *ipc_output;
+    Monitor *monitor = wlr_output_from_resource(output)->data;
+    struct wl_resource *output_resource = wl_resource_create(client, &zdwl_ipc_output_v2_interface, wl_resource_get_version(resource), id);
+    if (!output_resource)
+        return;
+
+    ipc_output = ecalloc(1, sizeof(*ipc_output));
+    ipc_output->resource = output_resource;
+    ipc_output->monitor = monitor;
+    wl_resource_set_implementation(output_resource, &dwl_output_implementation, ipc_output, dwl_ipc_output_destroy);
+    wl_list_insert(&monitor->dwl_ipc_outputs, &ipc_output->link);
+    dwl_ipc_output_printstatus_to(ipc_output);
+}
+
+void dwl_ipc_manager_release(struct wl_client *client, struct wl_resource *resource) {
+    wl_resource_destroy(resource);
+}
+
+static void dwl_ipc_output_destroy(struct wl_resource *resource) {
+    DwlIpcOutput *ipc_output = wl_resource_get_user_data(resource);
+    wl_list_remove(&ipc_output->link);
+    free(ipc_output);
+}
+
+void dwl_ipc_output_printstatus(Monitor *monitor) {
+    DwlIpcOutput *ipc_output;
+    wl_list_for_each(ipc_output, &monitor->dwl_ipc_outputs, link)
+        dwl_ipc_output_printstatus_to(ipc_output);
+}
+
+void dwl_ipc_output_printstatus_to(DwlIpcOutput *ipc_output) {
+    Monitor *monitor = ipc_output->monitor;
+    Client *c, *focused;
+    int tagmask, state, numclients, focused_client, tag;
+    const char *title, *appid;
+    focused = focustop(monitor);
+    zdwl_ipc_output_v2_send_active(ipc_output->resource, monitor == selmon);
+
+    for ( tag = 0 ; tag < LENGTH(tags); tag++) {
+        numclients = state = focused_client = 0;
+        tagmask = 1 << tag;
+        if ((tagmask & monitor->tagset[monitor->seltags]) != 0)
+            state |= ZDWL_IPC_OUTPUT_V2_TAG_STATE_ACTIVE;
+
+        wl_list_for_each(c, &clients, link) {
+            if (c->mon != monitor)
+                continue;
+            if (!(c->tags & tagmask))
+                continue;
+            if (c == focused)
+                focused_client = numclients;
+            if (c->isurgent)
+                state |= ZDWL_IPC_OUTPUT_V2_TAG_STATE_URGENT;
+
+            numclients++;
+        }
+        zdwl_ipc_output_v2_send_tag(ipc_output->resource, tag, state, numclients, focused_client);
+    }
+    title = focused ? client_get_title(focused) : "";
+    appid = focused ? client_get_appid(focused) : "";
+
+    zdwl_ipc_output_v2_send_layout(ipc_output->resource, monitor->lt[monitor->sellt] - layouts);
+    zdwl_ipc_output_v2_send_title(ipc_output->resource, title ? title : broken);
+    zdwl_ipc_output_v2_send_appid(ipc_output->resource, appid ? appid : broken);
+    zdwl_ipc_output_v2_send_layout_symbol(ipc_output->resource, monitor->ltsymbol);
+    zdwl_ipc_output_v2_send_frame(ipc_output->resource);
+}
+
+void dwl_ipc_output_set_client_tags(struct wl_client *client, struct wl_resource *resource, uint32_t and_tags, uint32_t xor_tags) {
+    DwlIpcOutput *ipc_output;
+    Monitor *monitor;
+    Client *selected_client;
+    unsigned int newtags = 0;
+
+    ipc_output = wl_resource_get_user_data(resource);
+    if (!ipc_output)
+        return;
+
+    monitor = ipc_output->monitor;
+    selected_client = focustop(monitor);
+    if (!selected_client)
+        return;
+
+    newtags = (selected_client->tags & and_tags) ^ xor_tags;
+    if (!newtags)
+        return;
+
+    selected_client->tags = newtags;
+    focusclient(focustop(selmon), 1);
+    arrange(selmon);
+    printstatus();
+}
+
+void dwl_ipc_output_set_layout(struct wl_client *client, struct wl_resource *resource, uint32_t index) {
+    DwlIpcOutput *ipc_output;
+    Monitor *monitor;
+
+    ipc_output = wl_resource_get_user_data(resource);
+    if (!ipc_output)
+        return;
+
+    monitor = ipc_output->monitor;
+    if (index >= LENGTH(layouts))
+        return;
+    if (index != monitor->lt[monitor->sellt] - layouts)
+        monitor->sellt ^= 1;
+
+    monitor->lt[monitor->sellt] = &layouts[index];
+    arrange(monitor);
+    printstatus();
+}
+
+void dwl_ipc_output_set_tags(struct wl_client *client, struct wl_resource *resource, uint32_t tagmask, uint32_t toggle_tagset) {
+    DwlIpcOutput *ipc_output;
+    Monitor *monitor;
+    unsigned int newtags = tagmask & TAGMASK;
+
+    ipc_output = wl_resource_get_user_data(resource);
+    if (!ipc_output)
+        return;
+    monitor = ipc_output->monitor;
+
+    if (!newtags)
+        return;
+    if (toggle_tagset)
+        monitor->seltags ^= 1;
+    if (newtags == monitor->tagset[monitor->seltags]) {
+        if (toggle_tagset)
+            monitor->seltags ^= 1;
+        return;
+    }
+
+    monitor->tagset[monitor->seltags] = newtags;
+    focusclient(focustop(monitor), 1);
+    arrange(monitor);
+    printstatus();
+}
+
+void dwl_ipc_output_release(struct wl_client *client, struct wl_resource *resource) {
+    wl_resource_destroy(resource);
 }
 
 void
@@ -1993,6 +2258,12 @@ swallow(Client *c, Client *w) {
 }
 
 void
+handleconstraintcommit(struct wl_listener *listener, void *data)
+{
+	assert(active_constraint->surface == data);
+}
+
+void
 incnmaster(const Arg *arg)
 {
 	if (!arg || !selmon)
@@ -2151,7 +2422,8 @@ keypress(struct wl_listener *listener, void *data)
 	/* On _press_ if there is no active screen locker,
 	 * attempt to process a compositor keybinding. */
 	if (!locked && !input_inhibit_mgr->active_inhibitor
-			&& event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
+			&& event->state == WL_KEYBOARD_KEY_STATE_PRESSED
+            && wl_list_empty(&shortcuts_inhibit_mgr->inhibitors))
 		for (i = 0; i < nsyms; i++)
 			handled = keybinding(mods, syms[i]) || handled;
 
@@ -2449,7 +2721,15 @@ motionrelative(struct wl_listener *listener, void *data)
 	 * special configuration applied for the specific input device which
 	 * generated the event. You can pass NULL for the device if you want to move
 	 * the cursor around without any input. */
-	wlr_cursor_move(cursor, &event->pointer->base, event->delta_x, event->delta_y);
+	wlr_relative_pointer_manager_v1_send_relative_motion(
+		relative_pointer_manager,
+		seat, (uint64_t)event->time_msec * 1000,
+		event->delta_x, event->delta_y, event->unaccel_dx, event->unaccel_dy);
+
+	if (!active_constraint) {
+		wlr_cursor_move(cursor, &event->pointer->base,
+			event->delta_x, event->delta_y);
+	}
 	motionnotify(event->time_msec);
 }
 
@@ -2618,6 +2898,7 @@ printstatus(void)
 				sel, urg);
 		printf("%s layout %s\n", m->wlr_output->name, m->ltsymbol);
 
+        dwl_ipc_output_printstatus(m);
         if (!no_bar) bar_draw(m);
 	}
 	fflush(stdout);
@@ -2991,12 +3272,21 @@ setup(void)
 			(float [4]){0.1, 0.1, 0.1, 1.0});
 	wlr_scene_node_set_enabled(&locked_bg->node, 0);
 
+    shortcuts_inhibit_mgr = wlr_keyboard_shortcuts_inhibit_v1_create(dpy);
+    wl_signal_add(&shortcuts_inhibit_mgr->events.new_inhibitor, &new_shortcuts_inhibitor);
+    wl_signal_add(&shortcuts_inhibit_mgr->events.destroy, &shortcuts_inhibit_mgr_destroy);
+
 	/* Use decoration protocols to negotiate server-side decorations */
 	wlr_server_decoration_manager_set_default_mode(
 			wlr_server_decoration_manager_create(dpy),
 			WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
 	xdg_decoration_mgr = wlr_xdg_decoration_manager_v1_create(dpy);
 	wl_signal_add(&xdg_decoration_mgr->events.new_toplevel_decoration, &new_xdg_decoration);
+
+	pointer_constraints = wlr_pointer_constraints_v1_create(dpy);
+	wl_signal_add(&pointer_constraints->events.new_constraint, &pointer_constraint_create);
+
+	relative_pointer_manager = wlr_relative_pointer_manager_v1_create(dpy);
 
 	/*
 	 * Creates a cursor, which is a wlroots utility for tracking the cursor
@@ -3053,6 +3343,7 @@ setup(void)
 	wl_signal_add(&output_mgr->events.test, &output_mgr_test);
 
 	wlr_scene_set_presentation(scene, wlr_presentation_create(dpy, backend));
+    wl_global_create(dpy, &zdwl_ipc_manager_v2_interface, 1, NULL, dwl_ipc_manager_bind);
 
 #ifdef XWAYLAND
 	/*
@@ -3153,7 +3444,7 @@ tile(Monitor *m)
 			n++;
 	if (n == 0)
 		return;
-	
+
 	if (smartgaps == n) {
 		oe = 0; // outer gaps disabled
 	}
