@@ -957,7 +957,7 @@ buttonpress(struct wl_listener *listener, void *data)
 	}
 	/* If the event wasn't handled by the compositor, notify the client with
 	 * pointer focus that a button press has occurred */
-    if (click == click_client) wlr_seat_pointer_notify_button(seat,
+    wlr_seat_pointer_notify_button(seat,
             event->time_msec, event->button, event->state);
 }
 
@@ -1645,11 +1645,8 @@ destroysessionmgr(struct wl_listener *listener, void *data)
 enum click_location determine_click(double x, double y, uint32_t *tag) {
     struct wlr_scene_node *node;
     struct wlr_scene_buffer *buffer;
-    Monitor *m;
     Client *c;
-    uint32_t bar_x;
-
-    m = xytomon(x, y);
+    uint32_t bar_x, actual_x;
 
     xytonode(x, y, NULL, &c, NULL, NULL, NULL);
     if (c) return click_client;
@@ -1657,26 +1654,26 @@ enum click_location determine_click(double x, double y, uint32_t *tag) {
     node = wlr_scene_node_at(&scene->tree.node, x, y, NULL, NULL);
     if (!node) return click_none;
 
-    if (!no_bar && (buffer = wlr_scene_buffer_from_node(node)) && buffer == m->bar.scene_buffer && m->bar.visible) {
+    if (!no_bar && (buffer = wlr_scene_buffer_from_node(node)) && buffer == selmon->bar.scene_buffer && selmon->bar.visible) {
         bar_x = 0;
-        x -= m->m.x;
+        actual_x = x - selmon->m.x;
 
-        if (m->bar.tags_x > x) {
+        if (selmon->bar.tags_x > actual_x) {
             for (int i = 0; i < LENGTH(tags); i++) {
                 bar_x += TEXT_WIDTH(tags[i], -1) + font->height;
-                if (bar_x > x) {
+                if (bar_x > actual_x) {
                     *tag = 1 << i;
                     return click_tag;
                 }
             }
         }
-        else if (m->bar.layout_x > x) {
+        else if (selmon->bar.layout_x > actual_x) {
             return click_layout;
         }
-        else if (m->bar.title_x > x) {
+        else if (selmon->bar.title_x > actual_x) {
             return click_title;
         }
-        else if (m->bar.status_x > x) {
+        else if (selmon->bar.status_x > actual_x) {
             return click_status;
         }
     }
@@ -1724,7 +1721,7 @@ uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreg
 
 
     for (; *text; text++) {
-        if (utf8decode(&state, &codepoint, *text) == UTF8_REJECT) continue;
+        if (utf8decode(&state, &codepoint, *text)) continue;
 
 
         glyph = fcft_rasterize_char_utf32(font, codepoint, FCFT_SUBPIXEL_NONE);
