@@ -1512,8 +1512,7 @@ uint32_t draw_text_fg_bg(pixman_image_t *foreground, const pixman_color_t *foreg
 
 
     for (; *text; text++) {
-        if (utf8decode(&state, &codepoint, *text) == UTF8_REJECT) continue;
-
+        if (utf8decode(&state, &codepoint, *text)) continue;
 
         glyph = fcft_rasterize_char_utf32(font, codepoint, FCFT_SUBPIXEL_NONE);
         if (!glyph) continue;
